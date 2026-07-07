@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/go-sql-driver/mysql"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -35,7 +36,12 @@ func (h *handler) postRegister(w http.ResponseWriter, r *http.Request) {
 	res, err := h.db.ExecContext(r.Context(),
 		"INSERT INTO users (name, password_hash) VALUES (?, ?)", req.Name, string(hash))
 	if err != nil {
-		writeError(w, http.StatusConflict, "name already taken")
+		var mysqlErr *mysql.MySQLError
+		if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+			writeError(w, http.StatusConflict, "name already taken")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	id, _ := res.LastInsertId()

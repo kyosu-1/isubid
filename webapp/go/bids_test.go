@@ -103,3 +103,18 @@ func TestPostBidAuctionNotFound(t *testing.T) {
 		t.Fatalf("status = %d, want 404", res.StatusCode)
 	}
 }
+
+func TestPostBidNotLive(t *testing.T) {
+	ts := newTestServer(t)
+	initApp(t, ts)
+	client := loginSeedUser(t, ts.URL, "seed_user_05")
+
+	// 11=closed, 12=upcoming — どちらも入札不可
+	for _, id := range []string{"11", "12"} {
+		res := postJSON(t, client, ts.URL+"/auctions/"+id+"/bids", `{"amount":999999}`)
+		res.Body.Close()
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("auction %s: status = %d, want 400", id, res.StatusCode)
+		}
+	}
+}
