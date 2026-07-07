@@ -11,9 +11,13 @@ import (
 	"github.com/isucon/isucandar"
 )
 
-// Scenario はISUBIDベンチのシナリオ。Phase 1ではPrepareのみ実装。
+// Scenario はISUBIDベンチのシナリオ。
 type Scenario struct {
-	Target string
+	Target      string
+	PrepareOnly bool
+	Bidders     int
+	Watchers    int
+	Ledger      *Ledger
 }
 
 func randomName(prefix string) string {
@@ -26,6 +30,9 @@ func randomName(prefix string) string {
 // isucandar は Load 実装がゼロだと負荷フェーズの parallel.Wait() が
 // デッドロックする(全goroutine停止でベンチが固まる)ため、削除しないこと。
 func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) error {
+	if s.PrepareOnly {
+		return nil
+	}
 	return nil
 }
 
