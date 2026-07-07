@@ -1,0 +1,5 @@
+*.test
+/bench/bench
+/webapp/go/isubid
+.DS_Store
+.superpowers/
