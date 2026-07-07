@@ -105,7 +105,7 @@ func (c *Client) GetAuctions(ctx context.Context) ([]AuctionSummary, error) {
 		return nil, err
 	}
 	if code != http.StatusOK {
-		return nil, fmt.Errorf("GET /auctions: status %d", code)
+		return nil, fmt.Errorf("GET /auctions: status %d (body: %s)", code, b)
 	}
 	var list []AuctionSummary
 	if err := json.Unmarshal(b, &list); err != nil {
@@ -121,7 +121,7 @@ func (c *Client) GetAuction(ctx context.Context, id int64) (*AuctionDetail, erro
 		return nil, err
 	}
 	if code != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: status %d", path, code)
+		return nil, fmt.Errorf("GET %s: status %d (body: %s)", path, code, b)
 	}
 	var d AuctionDetail
 	if err := json.Unmarshal(b, &d); err != nil {
@@ -136,6 +136,9 @@ func (c *Client) PostBid(ctx context.Context, auctionID, amount int64) (*BidCrea
 	code, b, err := c.doJSON(ctx, http.MethodPost, path, map[string]int64{"amount": amount})
 	if err != nil {
 		return nil, 0, err
+	}
+	if code >= http.StatusInternalServerError {
+		return nil, code, fmt.Errorf("POST %s: status %d (body: %s)", path, code, b)
 	}
 	if code != http.StatusCreated {
 		return nil, code, nil

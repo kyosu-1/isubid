@@ -20,14 +20,6 @@ func randomName(prefix string) string {
 	return prefix + hex.EncodeToString(b)
 }
 
-func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) error {
-	return nil
-}
-
-func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep) error {
-	return nil
-}
-
 func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) error {
 	c, err := NewClient(s.Target)
 	if err != nil {
@@ -49,6 +41,15 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 		return err
 	}
 	if err := ValidateInitialAuctionList(list); err != nil {
+		return err
+	}
+
+	// 2b. シード詳細の検証(入札で汚す前に照合する)
+	initialDetail, err := c.GetAuction(ctx, 1)
+	if err != nil {
+		return err
+	}
+	if err := ValidateInitialAuctionDetail(initialDetail); err != nil {
 		return err
 	}
 
@@ -92,6 +93,9 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 		return err
 	}
 	if err := ValidateBidReflected(after, bid); err != nil {
+		return err
+	}
+	if err := ValidateBidsOrdered(after.Bids); err != nil {
 		return err
 	}
 
