@@ -20,6 +20,7 @@ func seedList() []AuctionSummary {
 		a.CurrentPrice = price
 		a.BidCount = count
 		a.Seller = User{ID: seller, Name: "seed_user_" + pad2(seller)}
+		a.EndsAt = time.Date(2030, 1, 1, int(id), 0, 0, 0, time.UTC)
 		return a
 	}
 	return []AuctionSummary{
@@ -58,6 +59,88 @@ func TestValidateInitialAuctionListWrongCount(t *testing.T) {
 	}
 }
 
+func TestValidateInitialAuctionListWrongOrder(t *testing.T) {
+	list := seedList()
+	list[0], list[1] = list[1], list[0]
+	err := ValidateInitialAuctionList(list)
+	if err == nil {
+		t.Error("want order error, got nil")
+	}
+}
+
+func TestValidateInitialAuctionListNotLive(t *testing.T) {
+	list := seedList()
+	list[3].Status = "closed"
+	err := ValidateInitialAuctionList(list)
+	if err == nil || !strings.Contains(err.Error(), "status") {
+		t.Errorf("want status error, got %v", err)
+	}
+}
+
+func TestValidateInitialAuctionListWrongSeller(t *testing.T) {
+	list := seedList()
+	list[0].Seller.Name = "hacker"
+	err := ValidateInitialAuctionList(list)
+	if err == nil || !strings.Contains(err.Error(), "seller") {
+		t.Errorf("want seller error, got %v", err)
+	}
+}
+
+func seedDetail() *AuctionDetail {
+	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	return &AuctionDetail{
+		AuctionSummary: AuctionSummary{ID: 1, Title: "ヘリテージ・ウィングチェア", CurrentPrice: 1500, BidCount: 3, Status: "live"},
+		Description:    "英国アンティークの本革ウィングチェア",
+		StartingPrice:  1000,
+		Bids: []Bid{
+			{ID: 3, User: User{ID: 4, Name: "seed_user_04"}, Amount: 1500, CreatedAt: t0.Add(2 * time.Hour)},
+			{ID: 2, User: User{ID: 3, Name: "seed_user_03"}, Amount: 1200, CreatedAt: t0.Add(time.Hour)},
+			{ID: 1, User: User{ID: 2, Name: "seed_user_02"}, Amount: 1000, CreatedAt: t0},
+		},
+	}
+}
+
+func TestValidateInitialAuctionDetailOK(t *testing.T) {
+	if err := ValidateInitialAuctionDetail(seedDetail()); err != nil {
+		t.Errorf("want nil, got %v", err)
+	}
+}
+
+func TestValidateInitialAuctionDetailWrongDescription(t *testing.T) {
+	d := seedDetail()
+	d.Description = "changed"
+	if err := ValidateInitialAuctionDetail(d); err == nil {
+		t.Error("want description error, got nil")
+	}
+}
+
+func TestValidateInitialAuctionDetailWrongBidOrder(t *testing.T) {
+	d := seedDetail()
+	d.Bids[0], d.Bids[2] = d.Bids[2], d.Bids[0] // ASC順に崩す
+	if err := ValidateInitialAuctionDetail(d); err == nil {
+		t.Error("want bid order error, got nil")
+	}
+}
+
+func TestValidateBidsOrdered(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	ok := []Bid{
+		{ID: 5, CreatedAt: t0.Add(time.Hour)},
+		{ID: 4, CreatedAt: t0},
+		{ID: 2, CreatedAt: t0}, // 同時刻はid降順
+	}
+	if err := ValidateBidsOrdered(ok); err != nil {
+		t.Errorf("want nil, got %v", err)
+	}
+	ng := []Bid{
+		{ID: 4, CreatedAt: t0},
+		{ID: 5, CreatedAt: t0}, // 同時刻でid昇順は違反
+	}
+	if err := ValidateBidsOrdered(ng); err == nil {
+		t.Error("want order error, got nil")
+	}
+}
+
 func TestValidateBidReflected(t *testing.T) {
 	d := &AuctionDetail{
 		AuctionSummary: AuctionSummary{ID: 1, CurrentPrice: 1600},
@@ -74,5 +157,24 @@ func TestValidateBidReflected(t *testing.T) {
 	missing := &BidCreated{ID: 999, AuctionID: 1, UserID: 5, Amount: 1700}
 	if err := ValidateBidReflected(d, missing); err == nil {
 		t.Error("want error for missing bid, got nil")
+	}
+}
+
+func TestValidateBidReflectedWrongContent(t *testing.T) {
+	d := &AuctionDetail{
+		AuctionSummary: AuctionSummary{ID: 1, CurrentPrice: 1600},
+		Bids:           []Bid{{ID: 100, User: User{ID: 5}, Amount: 1600}},
+	}
+	// 金額不一致
+	if err := ValidateBidReflected(d, &BidCreated{ID: 100, UserID: 5, Amount: 1700, AuctionID: 1}); err == nil {
+		t.Error("want mismatch error, got nil")
+	}
+	// current_price が入札額より小さい
+	d2 := &AuctionDetail{
+		AuctionSummary: AuctionSummary{ID: 1, CurrentPrice: 1500},
+		Bids:           []Bid{{ID: 100, User: User{ID: 5}, Amount: 1600}},
+	}
+	if err := ValidateBidReflected(d2, &BidCreated{ID: 100, UserID: 5, Amount: 1600, AuctionID: 1}); err == nil {
+		t.Error("want current_price error, got nil")
 	}
 }

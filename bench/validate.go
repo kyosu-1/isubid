@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 )
 
 // expectedAuction は webapp/sql/90_seed_phase1.sql と一致させること(あちらが正)。
@@ -25,6 +26,19 @@ var expectedInitialAuctions = map[int64]expectedAuction{
 	10: {"コンパクトワーク 01", 5000, 0, 10},
 }
 
+type expectedBid struct {
+	Amount   int64
+	UserID   int64
+	UserName string
+}
+
+// auction 1 の初期入札列(created_at DESC順)。90_seed_phase1.sql が正。
+var expectedAuction1Bids = []expectedBid{
+	{1500, 4, "seed_user_04"},
+	{1200, 3, "seed_user_03"},
+	{1000, 2, "seed_user_02"},
+}
+
 func pad2(n int64) string {
 	return fmt.Sprintf("%02d", n)
 }
@@ -33,11 +47,17 @@ func ValidateInitialAuctionList(list []AuctionSummary) error {
 	if len(list) != len(expectedInitialAuctions) {
 		return fmt.Errorf("GET /auctions: 件数が %d (期待: %d)", len(list), len(expectedInitialAuctions))
 	}
-	for _, a := range list {
-		want, ok := expectedInitialAuctions[a.ID]
-		if !ok {
-			return fmt.Errorf("GET /auctions: 未知のオークション id=%d", a.ID)
+	var prevEndsAt time.Time
+	for i, a := range list {
+		// シードは id昇順 = ends_at昇順 の階段配置
+		if a.ID != int64(i+1) {
+			return fmt.Errorf("GET /auctions: %d番目が id=%d (期待: id=%d / ends_at ASC順)", i, a.ID, i+1)
 		}
+		if a.EndsAt.Before(prevEndsAt) {
+			return fmt.Errorf("GET /auctions: ends_at が昇順でない (id=%d)", a.ID)
+		}
+		prevEndsAt = a.EndsAt
+		want := expectedInitialAuctions[a.ID]
 		if a.Status != "live" {
 			return fmt.Errorf("auction %d: status が %q (期待: live)", a.ID, a.Status)
 		}
@@ -52,6 +72,45 @@ func ValidateInitialAuctionList(list []AuctionSummary) error {
 		}
 		if a.Seller.ID != want.SellerID || a.Seller.Name != "seed_user_"+pad2(want.SellerID) {
 			return fmt.Errorf("auction %d: seller が %+v (期待: id=%d)", a.ID, a.Seller, want.SellerID)
+		}
+	}
+	return nil
+}
+
+// ValidateInitialAuctionDetail は初期状態の auction 1 詳細を照合する(入札で汚す前に呼ぶこと)。
+func ValidateInitialAuctionDetail(d *AuctionDetail) error {
+	if d.ID != 1 {
+		return fmt.Errorf("auction detail: id が %d (期待: 1)", d.ID)
+	}
+	if d.Description != "英国アンティークの本革ウィングチェア" {
+		return fmt.Errorf("auction 1: description が %q", d.Description)
+	}
+	if d.StartingPrice != 1000 {
+		return fmt.Errorf("auction 1: starting_price が %d (期待: 1000)", d.StartingPrice)
+	}
+	if d.CurrentPrice != 1500 {
+		return fmt.Errorf("auction 1: current_price が %d (期待: 1500)", d.CurrentPrice)
+	}
+	if len(d.Bids) != len(expectedAuction1Bids) {
+		return fmt.Errorf("auction 1: bids が %d件 (期待: %d件)", len(d.Bids), len(expectedAuction1Bids))
+	}
+	for i, want := range expectedAuction1Bids {
+		b := d.Bids[i]
+		if b.Amount != want.Amount || b.User.ID != want.UserID || b.User.Name != want.UserName {
+			return fmt.Errorf("auction 1: bids[%d] が amount=%d user=%d/%q (期待: %d/%d/%q)",
+				i, b.Amount, b.User.ID, b.User.Name, want.Amount, want.UserID, want.UserName)
+		}
+	}
+	return ValidateBidsOrdered(d.Bids)
+}
+
+// ValidateBidsOrdered は入札列が created_at DESC, id DESC で並んでいることを検証する。
+func ValidateBidsOrdered(bids []Bid) error {
+	for i := 1; i < len(bids); i++ {
+		prev, cur := bids[i-1], bids[i]
+		if cur.CreatedAt.After(prev.CreatedAt) ||
+			(cur.CreatedAt.Equal(prev.CreatedAt) && cur.ID > prev.ID) {
+			return fmt.Errorf("bids の順序が created_at DESC, id DESC でない (index %d: id=%d)", i, cur.ID)
 		}
 	}
 	return nil
