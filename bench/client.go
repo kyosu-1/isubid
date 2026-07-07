@@ -20,6 +20,7 @@ func NewClient(target string) (*Client, error) {
 	ag, err := agent.NewAgent(
 		agent.WithBaseURL(target),
 		agent.WithTimeout(10*time.Second),
+		agent.WithDefaultTransport(),
 	)
 	if err != nil {
 		return nil, err
