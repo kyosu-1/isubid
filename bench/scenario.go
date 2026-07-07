@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/isucon/isucandar"
+	"github.com/isucon/isucandar/failure"
 	"github.com/isucon/isucandar/worker"
 )
 
@@ -30,6 +31,7 @@ func randomName(prefix string) string {
 
 // Load は入札者(bidderIteration)とウォッチャー(watcherIteration)の2種の
 // worker を無限ループで並行実行し、ctx(WithLoadTimeout)がキャンセルされるまで走らせる。
+// (isucandarのLoadは削除するとParallel実行系の前提が崩れるため、no-opでも定義必須)
 func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) error {
 	if s.PrepareOnly {
 		return nil
@@ -54,10 +56,60 @@ func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) erro
 	return nil
 }
 
-// Validation は Task 5 で本実装する。no-op でも定義が必要:
-// isucandar は Validation 実装がゼロだと validation フェーズの parallel.Wait() が
-// デッドロックする(全goroutine停止でベンチが固まる)ため、削除しないこと。
+// Validation はLoad終了後に台帳と実データを突合する。
+// ベンチ以外に入札者はいないため、各オークションの期待状態は
+// 「シード入札 + 台帳の受理入札」で完全に決まる。
+// (Load終了直後で入札は飛んでいないため、この時点でのset/max比較は厳密に成立する)
 func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep) error {
+	if s.PrepareOnly {
+		return nil
+	}
+	c, err := NewClient(s.Target)
+	if err != nil {
+		return err
+	}
+	for auctionID, accepted := range s.Ledger.ByAuction() {
+		want, ok := expectedInitialAuctions[auctionID]
+		if !ok {
+			step.AddError(failure.NewError(ErrCritical,
+				fmt.Errorf("想定外のauctionに入札が受理された (auction %d)", auctionID)))
+			continue
+		}
+		d, err := c.GetAuction(ctx, auctionID)
+		if err != nil {
+			step.AddError(failure.NewError(ErrCritical, err))
+			continue
+		}
+		byID := make(map[int64]Bid, len(d.Bids))
+		for _, b := range d.Bids {
+			byID[b.ID] = b
+		}
+		for _, ab := range accepted {
+			got, ok := byID[ab.BidID]
+			if !ok {
+				step.AddError(failure.NewError(ErrCritical,
+					fmt.Errorf("auction %d: 受理された入札 id=%d が消失", auctionID, ab.BidID)))
+				continue
+			}
+			if got.Amount != ab.Amount || got.User.ID != ab.UserID {
+				step.AddError(failure.NewError(ErrCritical,
+					fmt.Errorf("auction %d: 入札 id=%d の内容が改変 (got amount=%d user=%d, want amount=%d user=%d)",
+						auctionID, ab.BidID, got.Amount, got.User.ID, ab.Amount, ab.UserID)))
+			}
+		}
+		// current_price = max(シード時点の現在価格, 台帳の最大受理額)
+		expected := want.CurrentPrice
+		if max, ok := s.Ledger.MaxAmount(auctionID); ok && max > expected {
+			expected = max
+		}
+		if d.CurrentPrice != expected {
+			step.AddError(failure.NewError(ErrCritical,
+				fmt.Errorf("auction %d: current_price が %d (期待: %d)", auctionID, d.CurrentPrice, expected)))
+		}
+		if err := ValidateBidsOrdered(d.Bids); err != nil {
+			step.AddError(failure.NewError(ErrCritical, fmt.Errorf("auction %d: %w", auctionID, err)))
+		}
+	}
 	return nil
 }
 
