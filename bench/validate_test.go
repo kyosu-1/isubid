@@ -68,6 +68,16 @@ func TestValidateInitialAuctionListWrongOrder(t *testing.T) {
 	}
 }
 
+func TestValidateInitialAuctionListWrongEndsAtOrder(t *testing.T) {
+	// IDs are correct 1..10, but one entry's EndsAt is earlier than predecessor
+	list := seedList()
+	list[4].EndsAt = list[3].EndsAt.Add(-time.Hour)
+	err := ValidateInitialAuctionList(list)
+	if err == nil || !strings.Contains(err.Error(), "ends_at") {
+		t.Errorf("want ends_at error, got %v", err)
+	}
+}
+
 func TestValidateInitialAuctionListNotLive(t *testing.T) {
 	list := seedList()
 	list[3].Status = "closed"
@@ -106,6 +116,14 @@ func TestValidateInitialAuctionDetailOK(t *testing.T) {
 	}
 }
 
+func TestValidateInitialAuctionDetailWrongID(t *testing.T) {
+	d := seedDetail()
+	d.ID = 2
+	if err := ValidateInitialAuctionDetail(d); err == nil || !strings.Contains(err.Error(), "id") {
+		t.Errorf("want id error, got %v", err)
+	}
+}
+
 func TestValidateInitialAuctionDetailWrongDescription(t *testing.T) {
 	d := seedDetail()
 	d.Description = "changed"
@@ -114,11 +132,47 @@ func TestValidateInitialAuctionDetailWrongDescription(t *testing.T) {
 	}
 }
 
+func TestValidateInitialAuctionDetailWrongStartingPrice(t *testing.T) {
+	d := seedDetail()
+	d.StartingPrice = 999
+	if err := ValidateInitialAuctionDetail(d); err == nil || !strings.Contains(err.Error(), "starting_price") {
+		t.Errorf("want starting_price error, got %v", err)
+	}
+}
+
+func TestValidateInitialAuctionDetailWrongCurrentPrice(t *testing.T) {
+	d := seedDetail()
+	d.CurrentPrice = 1234
+	if err := ValidateInitialAuctionDetail(d); err == nil || !strings.Contains(err.Error(), "current_price") {
+		t.Errorf("want current_price error, got %v", err)
+	}
+}
+
+func TestValidateInitialAuctionDetailWrongBidCount(t *testing.T) {
+	d := seedDetail()
+	d.Bids = d.Bids[:2] // Remove one bid
+	if err := ValidateInitialAuctionDetail(d); err == nil {
+		t.Error("want bid count error, got nil")
+	}
+}
+
 func TestValidateInitialAuctionDetailWrongBidOrder(t *testing.T) {
 	d := seedDetail()
 	d.Bids[0], d.Bids[2] = d.Bids[2], d.Bids[0] // ASC順に崩す
 	if err := ValidateInitialAuctionDetail(d); err == nil {
 		t.Error("want bid order error, got nil")
+	}
+}
+
+func TestValidateInitialAuctionDetailWrongBidCreatedAtOrder(t *testing.T) {
+	// Bids match position-for-position in Amount/User but CreatedAt is out of order
+	// This exercises the ValidateBidsOrdered delegation at end of ValidateInitialAuctionDetail
+	d := seedDetail()
+	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	// Make bids[1].CreatedAt later than bids[0], violating DESC order
+	d.Bids[1].CreatedAt = t0.Add(3 * time.Hour)
+	if err := ValidateInitialAuctionDetail(d); err == nil {
+		t.Error("want bid order error from ValidateBidsOrdered, got nil")
 	}
 }
 
