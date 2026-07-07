@@ -122,7 +122,7 @@ func ValidateInitialAuctionDetail(d *AuctionDetail) error {
 				i, b.Amount, b.User.ID, b.User.Name, want.Amount, want.UserID, want.UserName)
 		}
 	}
-	return ValidateBidsOrdered(d.Bids)
+	return ValidateBidsInvariant(d.Bids)
 }
 
 // ValidateBidsOrdered は入札列が created_at DESC, id DESC で並んでいることを検証する。
@@ -135,6 +135,37 @@ func ValidateBidsOrdered(bids []Bid) error {
 		}
 	}
 	return nil
+}
+
+// ValidateBidAmountsMonotonic は入札列(created_at DESC, id DESC順)の金額が
+// 厳密単調減少であることを検証する。
+//
+// bid APIはオークション行をFOR UPDATEでロックしたまま「amount > 現在の最高額」の
+// 場合のみ入札を受理するため、受理順(created_at ASC, id ASC = ロック取得順)で
+// amountは厳密単調増加になる。したがってDESC順で返される一覧では厳密単調減少に
+// なるはずである。FOR UPDATEを外す(直列化を壊す)と、複数の入札が同時に
+// 「現在の最高額」を読んで両方受理されてしまい、受理順の金額が非増加(同額や逆転)に
+// なり得る — 本関数はその違反をDESC順一覧上の非減少として検出する。
+func ValidateBidAmountsMonotonic(bids []Bid) error {
+	for i := 0; i+1 < len(bids); i++ {
+		cur, next := bids[i], bids[i+1]
+		if cur.Amount <= next.Amount {
+			return fmt.Errorf(
+				"bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=%d(amount=%d) の直後に id=%d(amount=%d) が来ており単調減少でない)",
+				cur.ID, cur.Amount, next.ID, next.Amount)
+		}
+	}
+	return nil
+}
+
+// ValidateBidsInvariant は入札列に対する不変条件(順序 + 金額の単調性)を
+// まとめて検証するヘルパー。ValidateBidsOrdered → ValidateBidAmountsMonotonic の順に
+// 検査し、最初に見つかったエラーを返す。
+func ValidateBidsInvariant(bids []Bid) error {
+	if err := ValidateBidsOrdered(bids); err != nil {
+		return err
+	}
+	return ValidateBidAmountsMonotonic(bids)
 }
 
 func ValidateBidReflected(d *AuctionDetail, bid *BidCreated) error {

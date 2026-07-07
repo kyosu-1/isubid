@@ -149,7 +149,7 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 		return fmt.Errorf("auction 11: closed詳細が不正 (status=%q current_price=%d bids=%d, 期待: closed/12000/2)",
 			closedDetail.Status, closedDetail.CurrentPrice, len(closedDetail.Bids))
 	}
-	if err := ValidateBidsOrdered(closedDetail.Bids); err != nil {
+	if err := ValidateBidsInvariant(closedDetail.Bids); err != nil {
 		return err
 	}
 	upcomingDetail, err := c.GetAuction(ctx, 12)
@@ -217,7 +217,7 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 	if err := ValidateBidReflected(after, bid); err != nil {
 		return err
 	}
-	if err := ValidateBidsOrdered(after.Bids); err != nil {
+	if err := ValidateBidsInvariant(after.Bids); err != nil {
 		return err
 	}
 

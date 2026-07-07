@@ -98,7 +98,7 @@ func reconcileAuction(auctionID int64, d *AuctionDetail, seedCount, seedCurrent 
 		}
 	}
 
-	if err := ValidateBidsOrdered(d.Bids); err != nil {
+	if err := ValidateBidsInvariant(d.Bids); err != nil {
 		errs = append(errs, fmt.Errorf("auction %d: %w", auctionID, err))
 	}
 

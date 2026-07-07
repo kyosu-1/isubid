@@ -129,7 +129,7 @@ func (s *Scenario) watcherIteration(ctx context.Context, step *isucandar.Benchma
 		return
 	}
 	step.AddScore(ScoreGETDetail)
-	if err := ValidateBidsOrdered(d.Bids); err != nil {
+	if err := ValidateBidsInvariant(d.Bids); err != nil {
 		addErr(ctx, step, ErrCritical, fmt.Errorf("auction %d: %w", d.ID, err))
 		return
 	}

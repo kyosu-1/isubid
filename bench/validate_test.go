@@ -260,6 +260,85 @@ func TestValidateBidsOrdered(t *testing.T) {
 	}
 }
 
+func TestValidateBidAmountsMonotonicOK(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	bids := []Bid{
+		{ID: 3, Amount: 1500, CreatedAt: t0.Add(2 * time.Hour)},
+		{ID: 2, Amount: 1200, CreatedAt: t0.Add(time.Hour)},
+		{ID: 1, Amount: 1000, CreatedAt: t0},
+	}
+	if err := ValidateBidAmountsMonotonic(bids); err != nil {
+		t.Errorf("want nil, got %v", err)
+	}
+}
+
+func TestValidateBidAmountsMonotonicEqualFails(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	// FOR UPDATEが外れて2件が同額で受理されたケース(非増加=違反)。
+	bids := []Bid{
+		{ID: 6, Amount: 1200, CreatedAt: t0.Add(2 * time.Hour)},
+		{ID: 5, Amount: 1200, CreatedAt: t0.Add(time.Hour)},
+	}
+	err := ValidateBidAmountsMonotonic(bids)
+	if err == nil || !strings.Contains(err.Error(), "単調増加違反") {
+		t.Errorf("want 単調増加違反 error, got %v", err)
+	}
+}
+
+func TestValidateBidAmountsMonotonicIncreasingInDescFails(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	// DESC順で並んでいるはずなのに金額が増加している(逆転)ケース。
+	bids := []Bid{
+		{ID: 6, Amount: 1000, CreatedAt: t0.Add(2 * time.Hour)},
+		{ID: 5, Amount: 1200, CreatedAt: t0.Add(time.Hour)},
+	}
+	err := ValidateBidAmountsMonotonic(bids)
+	if err == nil || !strings.Contains(err.Error(), "単調増加違反") {
+		t.Errorf("want 単調増加違反 error, got %v", err)
+	}
+}
+
+func TestValidateBidAmountsMonotonicEmptyOrSingleOK(t *testing.T) {
+	if err := ValidateBidAmountsMonotonic(nil); err != nil {
+		t.Errorf("want nil for empty, got %v", err)
+	}
+	if err := ValidateBidAmountsMonotonic([]Bid{{ID: 1, Amount: 1000}}); err != nil {
+		t.Errorf("want nil for single bid, got %v", err)
+	}
+}
+
+func TestValidateBidsInvariantDelegatesBoth(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	ok := []Bid{
+		{ID: 3, Amount: 1500, CreatedAt: t0.Add(2 * time.Hour)},
+		{ID: 2, Amount: 1200, CreatedAt: t0.Add(time.Hour)},
+		{ID: 1, Amount: 1000, CreatedAt: t0},
+	}
+	if err := ValidateBidsInvariant(ok); err != nil {
+		t.Errorf("want nil, got %v", err)
+	}
+
+	// created_at順は正しいが金額が非減少(FOR UPDATE除去の典型的な症状)。
+	monotonicViolation := []Bid{
+		{ID: 3, Amount: 1000, CreatedAt: t0.Add(2 * time.Hour)},
+		{ID: 2, Amount: 1200, CreatedAt: t0.Add(time.Hour)},
+		{ID: 1, Amount: 1000, CreatedAt: t0},
+	}
+	err := ValidateBidsInvariant(monotonicViolation)
+	if err == nil || !strings.Contains(err.Error(), "単調増加違反") {
+		t.Errorf("want 単調増加違反 error, got %v", err)
+	}
+
+	// 順序自体が壊れているケースはValidateBidsOrderedが先に検知する。
+	orderViolation := []Bid{
+		{ID: 1, Amount: 1000, CreatedAt: t0},
+		{ID: 2, Amount: 1200, CreatedAt: t0.Add(time.Hour)},
+	}
+	if err := ValidateBidsInvariant(orderViolation); err == nil {
+		t.Error("want order error, got nil")
+	}
+}
+
 func TestValidateBidReflected(t *testing.T) {
 	d := &AuctionDetail{
 		AuctionSummary: AuctionSummary{ID: 1, CurrentPrice: 1600},

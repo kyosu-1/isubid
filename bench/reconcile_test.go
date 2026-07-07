@@ -50,7 +50,9 @@ func TestReconcileAuction(t *testing.T) {
 			d: &AuctionDetail{
 				AuctionSummary: AuctionSummary{ID: 1, CurrentPrice: 1000},
 				Bids: []Bid{
-					{ID: 9, User: User{ID: 5}, Amount: 900, CreatedAt: t0.Add(time.Hour)},
+					// amount(1100) > seedBid amount(1000) を保って単調減少不変条件は満たしたまま、
+					// 「台帳にない入札」だけを問う(monotonic違反と混同しないため)。
+					{ID: 9, User: User{ID: 5}, Amount: 1100, CreatedAt: t0.Add(time.Hour)},
 					seedBid(1, t0),
 				},
 			},
@@ -133,6 +135,9 @@ func TestReconcileAuctionPendingConsumedOncePerMatch(t *testing.T) {
 	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	// Two id>8 bids with the same user/amount, but only one pending to explain them:
 	// the second must fail as unexplained (pending consumed at most once).
+	// 同一amountの2件は、それ自体がValidateBidAmountsMonotonicの単調増加違反にも
+	// 該当する(FOR UPDATEが正しく機能していれば同額の入札が2件受理されることはない)ため、
+	// 「台帳にない入札」エラーに加えて単調性エラーも同時に出るのが正しい期待値。
 	d := &AuctionDetail{
 		AuctionSummary: AuctionSummary{ID: 1, CurrentPrice: 1600},
 		Bids: []Bid{
@@ -142,7 +147,7 @@ func TestReconcileAuctionPendingConsumedOncePerMatch(t *testing.T) {
 	}
 	pending := []PendingBid{{AuctionID: 1, UserID: 5, Amount: 1600}}
 	errs := reconcileAuction(1, d, 0, 1000, nil, pending)
-	if len(errs) != 1 {
-		t.Fatalf("reconcileAuction() = %v errors (%v), want exactly 1 (one bid unexplained)", len(errs), errs)
+	if len(errs) != 2 {
+		t.Fatalf("reconcileAuction() = %v errors (%v), want exactly 2 (one bid unexplained + monotonic violation from equal amounts)", len(errs), errs)
 	}
 }
