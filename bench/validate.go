@@ -11,19 +11,21 @@ type expectedAuction struct {
 	CurrentPrice int64
 	BidCount     int64
 	SellerID     int64
+	CategoryID   int64
+	EndsAtHour   int // ends_at = 2030-01-01 <hour>:00:00 UTC(シードの階段配置)
 }
 
 var expectedInitialAuctions = map[int64]expectedAuction{
-	1:  {"ヘリテージ・ウィングチェア", 1500, 3, 1},
-	2:  {"エルゴホスト Model E", 2100, 1, 2},
-	3:  {"ISUレーサー GT", 3100, 1, 3},
-	4:  {"メッシュフロー 40", 4100, 1, 4},
-	5:  {"ミッドセンチュリー・ラウンジ", 2500, 0, 5},
-	6:  {"ネオンストライク Z", 3000, 0, 6},
-	7:  {"スタンドフレックス", 3500, 0, 7},
-	8:  {"チャーチチェア 1920", 4000, 0, 8},
-	9:  {"プロシート・エディション", 4500, 0, 9},
-	10: {"コンパクトワーク 01", 5000, 0, 10},
+	1:  {"ヘリテージ・ウィングチェア", 1500, 3, 1, 3, 1},
+	2:  {"エルゴホスト Model E", 2100, 1, 2, 1, 2},
+	3:  {"ISUレーサー GT", 3100, 1, 3, 2, 3},
+	4:  {"メッシュフロー 40", 4100, 1, 4, 1, 4},
+	5:  {"ミッドセンチュリー・ラウンジ", 2500, 0, 5, 3, 5},
+	6:  {"ネオンストライク Z", 3000, 0, 6, 2, 6},
+	7:  {"スタンドフレックス", 3500, 0, 7, 1, 7},
+	8:  {"チャーチチェア 1920", 4000, 0, 8, 3, 8},
+	9:  {"プロシート・エディション", 4500, 0, 9, 2, 9},
+	10: {"コンパクトワーク 01", 5000, 0, 10, 1, 10},
 }
 
 type expectedBid struct {
@@ -58,6 +60,10 @@ func ValidateInitialAuctionList(list []AuctionSummary) error {
 		}
 		prevEndsAt = a.EndsAt
 		want := expectedInitialAuctions[a.ID]
+		// ends_at の絶対値照合(2030-01-01 0N:00:00 UTC)
+		if wantEndsAt := time.Date(2030, 1, 1, want.EndsAtHour, 0, 0, 0, time.UTC); !a.EndsAt.Equal(wantEndsAt) {
+			return fmt.Errorf("auction %d: ends_at が %v (期待: %v)", a.ID, a.EndsAt, wantEndsAt)
+		}
 		if a.Status != "live" {
 			return fmt.Errorf("auction %d: status が %q (期待: live)", a.ID, a.Status)
 		}
@@ -70,6 +76,9 @@ func ValidateInitialAuctionList(list []AuctionSummary) error {
 		if a.BidCount != want.BidCount {
 			return fmt.Errorf("auction %d: bid_count が %d (期待: %d)", a.ID, a.BidCount, want.BidCount)
 		}
+		if a.CategoryID != want.CategoryID {
+			return fmt.Errorf("auction %d: category_id が %d (期待: %d)", a.ID, a.CategoryID, want.CategoryID)
+		}
 		if a.Seller.ID != want.SellerID || a.Seller.Name != "seed_user_"+pad2(want.SellerID) {
 			return fmt.Errorf("auction %d: seller が %+v (期待: id=%d)", a.ID, a.Seller, want.SellerID)
 		}
@@ -81,6 +90,18 @@ func ValidateInitialAuctionList(list []AuctionSummary) error {
 func ValidateInitialAuctionDetail(d *AuctionDetail) error {
 	if d.ID != 1 {
 		return fmt.Errorf("auction detail: id が %d (期待: 1)", d.ID)
+	}
+	if d.Title != "ヘリテージ・ウィングチェア" {
+		return fmt.Errorf("auction 1: title が %q", d.Title)
+	}
+	if d.Status != "live" {
+		return fmt.Errorf("auction 1: status が %q (期待: live)", d.Status)
+	}
+	if d.CategoryID != 3 {
+		return fmt.Errorf("auction 1: category_id が %d (期待: 3)", d.CategoryID)
+	}
+	if d.BidCount != int64(len(expectedAuction1Bids)) {
+		return fmt.Errorf("auction 1: bid_count が %d (期待: %d)", d.BidCount, len(expectedAuction1Bids))
 	}
 	if d.Description != "英国アンティークの本革ウィングチェア" {
 		return fmt.Errorf("auction 1: description が %q", d.Description)

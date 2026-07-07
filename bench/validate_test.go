@@ -23,7 +23,7 @@ func seedList() []AuctionSummary {
 		a.EndsAt = time.Date(2030, 1, 1, int(id), 0, 0, 0, time.UTC)
 		return a
 	}
-	return []AuctionSummary{
+	list := []AuctionSummary{
 		mk(1, "ヘリテージ・ウィングチェア", 1500, 3, 1),
 		mk(2, "エルゴホスト Model E", 2100, 1, 2),
 		mk(3, "ISUレーサー GT", 3100, 1, 3),
@@ -35,6 +35,18 @@ func seedList() []AuctionSummary {
 		mk(9, "プロシート・エディション", 4500, 0, 9),
 		mk(10, "コンパクトワーク 01", 5000, 0, 10),
 	}
+	// Set correct CategoryID values per auction
+	list[0].CategoryID = 3  // auction 1
+	list[1].CategoryID = 1  // auction 2
+	list[2].CategoryID = 2  // auction 3
+	list[3].CategoryID = 1  // auction 4
+	list[4].CategoryID = 3  // auction 5
+	list[5].CategoryID = 2  // auction 6
+	list[6].CategoryID = 1  // auction 7
+	list[7].CategoryID = 3  // auction 8
+	list[8].CategoryID = 2  // auction 9
+	list[9].CategoryID = 1  // auction 10
+	return list
 }
 
 func TestValidateInitialAuctionListOK(t *testing.T) {
@@ -96,10 +108,22 @@ func TestValidateInitialAuctionListWrongSeller(t *testing.T) {
 	}
 }
 
+func TestValidateInitialAuctionListWrongEndsAtValue(t *testing.T) {
+	list := seedList()
+	// idの並びは正しいが ends_at の絶対値が期待とずれている(全体を+1日シフト)
+	for i := range list {
+		list[i].EndsAt = list[i].EndsAt.Add(24 * time.Hour)
+	}
+	err := ValidateInitialAuctionList(list)
+	if err == nil || !strings.Contains(err.Error(), "ends_at") {
+		t.Errorf("want ends_at value error, got %v", err)
+	}
+}
+
 func seedDetail() *AuctionDetail {
 	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	return &AuctionDetail{
-		AuctionSummary: AuctionSummary{ID: 1, Title: "ヘリテージ・ウィングチェア", CurrentPrice: 1500, BidCount: 3, Status: "live"},
+		AuctionSummary: AuctionSummary{ID: 1, Title: "ヘリテージ・ウィングチェア", CategoryID: 3, CurrentPrice: 1500, BidCount: 3, Status: "live"},
 		Description:    "英国アンティークの本革ウィングチェア",
 		StartingPrice:  1000,
 		Bids: []Bid{
@@ -148,11 +172,43 @@ func TestValidateInitialAuctionDetailWrongCurrentPrice(t *testing.T) {
 	}
 }
 
-func TestValidateInitialAuctionDetailWrongBidCount(t *testing.T) {
+func TestValidateInitialAuctionDetailTruncatedBids(t *testing.T) {
 	d := seedDetail()
 	d.Bids = d.Bids[:2] // Remove one bid
 	if err := ValidateInitialAuctionDetail(d); err == nil {
 		t.Error("want bid count error, got nil")
+	}
+}
+
+func TestValidateInitialAuctionDetailWrongTitle(t *testing.T) {
+	d := seedDetail()
+	d.Title = "changed"
+	if err := ValidateInitialAuctionDetail(d); err == nil {
+		t.Error("want title error, got nil")
+	}
+}
+
+func TestValidateInitialAuctionDetailWrongStatus(t *testing.T) {
+	d := seedDetail()
+	d.Status = "closed"
+	if err := ValidateInitialAuctionDetail(d); err == nil {
+		t.Error("want status error, got nil")
+	}
+}
+
+func TestValidateInitialAuctionDetailWrongBidCount(t *testing.T) {
+	d := seedDetail()
+	d.BidCount = 99 // フィールド単体の不一致(Bids配列は正しいまま)
+	if err := ValidateInitialAuctionDetail(d); err == nil {
+		t.Error("want bid_count error, got nil")
+	}
+}
+
+func TestValidateInitialAuctionDetailWrongCategory(t *testing.T) {
+	d := seedDetail()
+	d.CategoryID = 99
+	if err := ValidateInitialAuctionDetail(d); err == nil {
+		t.Error("want category error, got nil")
 	}
 }
 
