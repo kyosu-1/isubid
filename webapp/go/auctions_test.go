@@ -126,3 +126,65 @@ func TestGetAuctionNotFound(t *testing.T) {
 		t.Fatalf("status = %d, want 404", res.StatusCode)
 	}
 }
+
+func TestGetAuctionsOrderedByEndsAt(t *testing.T) {
+	ts := newTestServer(t)
+	initApp(t, ts)
+
+	res, err := http.Get(ts.URL + "/auctions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var list []auctionSummaryJSON
+	if err := json.NewDecoder(res.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	// シードは id昇順 = ends_at昇順 になるよう階段配置されている
+	for i, a := range list {
+		if a.ID != int64(i+1) {
+			t.Fatalf("list[%d].ID = %d, want %d (ends_at ASC order)", i, a.ID, i+1)
+		}
+		if i > 0 && a.EndsAt.Before(list[i-1].EndsAt) {
+			t.Fatalf("list[%d].EndsAt %v < list[%d].EndsAt %v", i, a.EndsAt, i-1, list[i-1].EndsAt)
+		}
+	}
+}
+
+func TestGetAuctionClosedDetail(t *testing.T) {
+	ts := newTestServer(t)
+	initApp(t, ts)
+
+	res, err := http.Get(ts.URL + "/auctions/11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	var d auctionDetailJSON
+	if err := json.NewDecoder(res.Body).Decode(&d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Status != "closed" {
+		t.Errorf("status = %q, want closed", d.Status)
+	}
+	if d.CurrentPrice != 12000 || d.BidCount != 2 {
+		t.Errorf("current_price = %d / bid_count = %d, want 12000 / 2", d.CurrentPrice, d.BidCount)
+	}
+}
+
+func TestGetAuctionInvalidID(t *testing.T) {
+	ts := newTestServer(t)
+	initApp(t, ts)
+
+	res, err := http.Get(ts.URL + "/auctions/notanumber")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", res.StatusCode)
+	}
+}
