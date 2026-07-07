@@ -19,6 +19,8 @@ func newRouter(db *sqlx.DB) http.Handler {
 	r.Post("/initialize", h.postInitialize)
 	r.Post("/register", h.postRegister)
 	r.Post("/login", h.postLogin)
+	r.Get("/auctions", h.getAuctions)
+	r.Get("/auctions/{id}", h.getAuction)
 	return r
 }
 
