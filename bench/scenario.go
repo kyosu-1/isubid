@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/isucon/isucandar"
 	"github.com/isucon/isucandar/failure"
@@ -57,9 +58,15 @@ func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) erro
 }
 
 // Validation はLoad終了後に台帳と実データを突合する。
-// ベンチ以外に入札者はいないため、各オークションの期待状態は
-// 「シード入札 + 台帳の受理入札」で完全に決まる。
-// (Load終了直後で入札は飛んでいないため、この時点でのset/max比較は厳密に成立する)
+// ベンチ以外に入札者はいないため、各オークションの期待状態は理論上
+// 「シード入札(id<=8) ∪ 台帳が確定受理した入札 ∪ 結果不明のまま残ったpending」で決まる
+// (reconcileAuction参照)。201の応答を受け取れないままctxキャンセル/転送エラーになった
+// 入札は、サーバー側では既にコミットされている可能性があるため、pendingとして
+// 突き合わせに使うことでfalse-FAILを避ける(C1)。
+//
+// 想定していないauctionへの記録(バグでもない限り起こらない)は即critical。
+// 各auctionはid<=10全件を検査する(Loadでベンチが一度も触れなかったauctionでも、
+// シード入札が消えていないかは検証したいため)。
 func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep) error {
 	if s.PrepareOnly {
 		return nil
@@ -68,46 +75,33 @@ func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep
 	if err != nil {
 		return err
 	}
-	for auctionID, accepted := range s.Ledger.ByAuction() {
-		want, ok := expectedInitialAuctions[auctionID]
-		if !ok {
+
+	acceptedByAuction := s.Ledger.ByAuction()
+	pendingByAuction := s.Ledger.PendingByAuction()
+
+	for auctionID := range acceptedByAuction {
+		if _, ok := expectedInitialAuctions[auctionID]; !ok {
 			step.AddError(failure.NewError(ErrCritical,
 				fmt.Errorf("想定外のauctionに入札が受理された (auction %d)", auctionID)))
-			continue
 		}
-		d, err := c.GetAuction(ctx, auctionID)
-		if err != nil {
-			step.AddError(failure.NewError(ErrCritical, err))
-			continue
-		}
-		byID := make(map[int64]Bid, len(d.Bids))
-		for _, b := range d.Bids {
-			byID[b.ID] = b
-		}
-		for _, ab := range accepted {
-			got, ok := byID[ab.BidID]
-			if !ok {
-				step.AddError(failure.NewError(ErrCritical,
-					fmt.Errorf("auction %d: 受理された入札 id=%d が消失", auctionID, ab.BidID)))
-				continue
-			}
-			if got.Amount != ab.Amount || got.User.ID != ab.UserID {
-				step.AddError(failure.NewError(ErrCritical,
-					fmt.Errorf("auction %d: 入札 id=%d の内容が改変 (got amount=%d user=%d, want amount=%d user=%d)",
-						auctionID, ab.BidID, got.Amount, got.User.ID, ab.Amount, ab.UserID)))
-			}
-		}
-		// current_price = max(シード時点の現在価格, 台帳の最大受理額)
-		expected := want.CurrentPrice
-		if max, ok := s.Ledger.MaxAmount(auctionID); ok && max > expected {
-			expected = max
-		}
-		if d.CurrentPrice != expected {
+	}
+	for auctionID := range pendingByAuction {
+		if _, ok := expectedInitialAuctions[auctionID]; !ok {
 			step.AddError(failure.NewError(ErrCritical,
-				fmt.Errorf("auction %d: current_price が %d (期待: %d)", auctionID, d.CurrentPrice, expected)))
+				fmt.Errorf("想定外のauctionに未確定入札(pending)が存在 (auction %d)", auctionID)))
 		}
-		if err := ValidateBidsOrdered(d.Bids); err != nil {
+	}
+
+	for auctionID, want := range expectedInitialAuctions {
+		// M1: GetAuctionは一過性エラーの影響を減らすため軽いbackoff付きで最大3回試行する。
+		d, err := c.GetAuctionRetry(ctx, auctionID, 3, 100*time.Millisecond)
+		if err != nil {
 			step.AddError(failure.NewError(ErrCritical, fmt.Errorf("auction %d: %w", auctionID, err)))
+			continue
+		}
+		for _, e := range reconcileAuction(auctionID, d, want.BidCount, want.CurrentPrice,
+			acceptedByAuction[auctionID], pendingByAuction[auctionID]) {
+			step.AddError(failure.NewError(ErrCritical, e))
 		}
 	}
 	return nil

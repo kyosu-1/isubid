@@ -130,6 +130,28 @@ func (c *Client) GetAuction(ctx context.Context, id int64) (*AuctionDetail, erro
 	return &d, nil
 }
 
+// GetAuctionRetry は GetAuction を最大 attempts 回、brief backoff を挟んで再試行する。
+// Validationフェーズでの単発の一過性エラー(GC/瞬断等)がそのままcritical化するのを避けるため
+// (M1: 安価な追加耐性)。
+func (c *Client) GetAuctionRetry(ctx context.Context, id int64, attempts int, backoff time.Duration) (*AuctionDetail, error) {
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		d, err := c.GetAuction(ctx, id)
+		if err == nil {
+			return d, nil
+		}
+		lastErr = err
+		if i < attempts-1 {
+			select {
+			case <-ctx.Done():
+				return nil, lastErr
+			case <-time.After(backoff):
+			}
+		}
+	}
+	return nil, lastErr
+}
+
 // PostBid は入札する。4xxはエラーではなくステータスコードで返す(検証側で判断)。
 func (c *Client) PostBid(ctx context.Context, auctionID, amount int64) (*BidCreated, int, error) {
 	path := fmt.Sprintf("/auctions/%d/bids", auctionID)
