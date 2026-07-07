@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -9,6 +10,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 )
+
+// queryer は *sqlx.DB と *sqlx.Tx の両方が満たす、読み取りに必要な最小インターフェース。
+// summarize をトランザクション内(一貫したスナップショット)でも単独でも使えるようにする。
+type queryer interface {
+	GetContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error
+	SelectContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error
+}
 
 type auctionRow struct {
 	ID            int64     `db:"id"`
@@ -51,9 +59,11 @@ type auctionDetail struct {
 }
 
 // summarize は1オークションあたり3クエリを発行する。意図的に遅い実装(N+1)。
-func (h *handler) summarize(r *http.Request, a *auctionRow) (*auctionSummary, error) {
+// q に *sqlx.Tx を渡すと、呼び出し元が同一トランザクション(MySQLデフォルトの
+// REPEATABLE READ)内でスナップショットを共有でき、他クエリとの読み取り一貫性を保てる。
+func (h *handler) summarize(ctx context.Context, q queryer, a *auctionRow) (*auctionSummary, error) {
 	var maxAmount sql.NullInt64
-	if err := h.db.GetContext(r.Context(), &maxAmount,
+	if err := q.GetContext(ctx, &maxAmount,
 		"SELECT MAX(amount) FROM bids WHERE auction_id = ?", a.ID); err != nil {
 		return nil, err
 	}
@@ -62,12 +72,12 @@ func (h *handler) summarize(r *http.Request, a *auctionRow) (*auctionSummary, er
 		price = maxAmount.Int64
 	}
 	var bidCount int64
-	if err := h.db.GetContext(r.Context(), &bidCount,
+	if err := q.GetContext(ctx, &bidCount,
 		"SELECT COUNT(*) FROM bids WHERE auction_id = ?", a.ID); err != nil {
 		return nil, err
 	}
 	var seller userResponse
-	if err := h.db.GetContext(r.Context(), &seller,
+	if err := q.GetContext(ctx, &seller,
 		"SELECT id, name FROM users WHERE id = ?", a.SellerID); err != nil {
 		return nil, err
 	}
@@ -87,7 +97,7 @@ func (h *handler) getAuctions(w http.ResponseWriter, r *http.Request) {
 	}
 	summaries := make([]auctionSummary, 0, len(rows))
 	for i := range rows {
-		s, err := h.summarize(r, &rows[i]) // 意図的に遅い実装(N+1)
+		s, err := h.summarize(r.Context(), h.db, &rows[i]) // 意図的に遅い実装(N+1)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -103,8 +113,18 @@ func (h *handler) getAuction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid auction id")
 		return
 	}
+	// 応答全体(current_price/bid_count/bids)を単一トランザクションのスナップショットから
+	// 組み立てる。個別クエリのままだと、組み立て中に他リクエストの入札がcommitされた場合
+	// bid_count と bids件数が食い違う(意図的なN+1構成はそのまま維持しつつ読み取り一貫性のみ確保)。
+	tx, err := h.db.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer tx.Rollback()
+
 	var a auctionRow
-	err = h.db.GetContext(r.Context(), &a,
+	err = tx.GetContext(r.Context(), &a,
 		"SELECT "+auctionColumns+" FROM auctions WHERE id = ?", id)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "auction not found")
@@ -114,7 +134,7 @@ func (h *handler) getAuction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s, err := h.summarize(r, &a)
+	s, err := h.summarize(r.Context(), tx, &a)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -125,7 +145,7 @@ func (h *handler) getAuction(w http.ResponseWriter, r *http.Request) {
 		Amount    int64     `db:"amount"`
 		CreatedAt time.Time `db:"created_at"`
 	}
-	if err := h.db.SelectContext(r.Context(), &bidRows,
+	if err := tx.SelectContext(r.Context(), &bidRows,
 		"SELECT id, user_id, amount, created_at FROM bids WHERE auction_id = ? ORDER BY created_at DESC, id DESC", id); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -134,7 +154,7 @@ func (h *handler) getAuction(w http.ResponseWriter, r *http.Request) {
 	for _, b := range bidRows {
 		var u userResponse
 		// 意図的に遅い実装(N+1): 入札ごとにユーザーを引く
-		if err := h.db.GetContext(r.Context(), &u,
+		if err := tx.GetContext(r.Context(), &u,
 			"SELECT id, name FROM users WHERE id = ?", b.UserID); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
