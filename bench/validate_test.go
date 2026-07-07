@@ -108,6 +108,15 @@ func TestValidateInitialAuctionListWrongSeller(t *testing.T) {
 	}
 }
 
+func TestValidateInitialAuctionListWrongCategory(t *testing.T) {
+	list := seedList()
+	list[0].CategoryID = 99
+	err := ValidateInitialAuctionList(list)
+	if err == nil || !strings.Contains(err.Error(), "category_id") {
+		t.Errorf("want category_id error, got %v", err)
+	}
+}
+
 func TestValidateInitialAuctionListWrongEndsAtValue(t *testing.T) {
 	list := seedList()
 	// idの並びは正しいが ends_at の絶対値が期待とずれている(全体を+1日シフト)
