@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/isucon/isucandar"
+	"github.com/isucon/isucandar/worker"
 )
 
 // Scenario はISUBIDベンチのシナリオ。
@@ -26,16 +28,35 @@ func randomName(prefix string) string {
 	return prefix + hex.EncodeToString(b)
 }
 
-// Load / Validation は Phase 2b で本実装する。no-op でも定義が必要:
-// isucandar は Load 実装がゼロだと負荷フェーズの parallel.Wait() が
-// デッドロックする(全goroutine停止でベンチが固まる)ため、削除しないこと。
+// Load は入札者(bidderIteration)とウォッチャー(watcherIteration)の2種の
+// worker を無限ループで並行実行し、ctx(WithLoadTimeout)がキャンセルされるまで走らせる。
 func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) error {
 	if s.PrepareOnly {
 		return nil
 	}
+	bidder, err := worker.NewWorker(func(ctx context.Context, _ int) {
+		s.bidderIteration(ctx, step)
+	}, worker.WithInfinityLoop(), worker.WithMaxParallelism(int32(s.Bidders)))
+	if err != nil {
+		return err
+	}
+	watcher, err := worker.NewWorker(func(ctx context.Context, _ int) {
+		s.watcherIteration(ctx, step)
+	}, worker.WithInfinityLoop(), worker.WithMaxParallelism(int32(s.Watchers)))
+	if err != nil {
+		return err
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); bidder.Process(ctx) }()
+	go func() { defer wg.Done(); watcher.Process(ctx) }()
+	wg.Wait()
 	return nil
 }
 
+// Validation は Task 5 で本実装する。no-op でも定義が必要:
+// isucandar は Validation 実装がゼロだと validation フェーズの parallel.Wait() が
+// デッドロックする(全goroutine停止でベンチが固まる)ため、削除しないこと。
 func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep) error {
 	return nil
 }
