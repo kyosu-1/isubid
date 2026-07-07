@@ -20,6 +20,17 @@ func randomName(prefix string) string {
 	return prefix + hex.EncodeToString(b)
 }
 
+// Load / Validation は Phase 2b で本実装する。no-op でも定義が必要:
+// isucandar は Load 実装がゼロだと負荷フェーズの parallel.Wait() が
+// デッドロックする(全goroutine停止でベンチが固まる)ため、削除しないこと。
+func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) error {
+	return nil
+}
+
+func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep) error {
+	return nil
+}
+
 func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) error {
 	c, err := NewClient(s.Target)
 	if err != nil {
