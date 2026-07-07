@@ -17,6 +17,8 @@ func newRouter(db *sqlx.DB) http.Handler {
 	h := &handler{db: db}
 	r := chi.NewRouter()
 	r.Post("/initialize", h.postInitialize)
+	r.Post("/register", h.postRegister)
+	r.Post("/login", h.postLogin)
 	return r
 }
 
