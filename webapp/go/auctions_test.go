@@ -140,13 +140,17 @@ func TestGetAuctionsOrderedByEndsAt(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&list); err != nil {
 		t.Fatal(err)
 	}
-	// シードは id昇順 = ends_at昇順 になるよう階段配置されている
-	for i, a := range list {
-		if a.ID != int64(i+1) {
-			t.Fatalf("list[%d].ID = %d, want %d (ends_at ASC order)", i, a.ID, i+1)
+	// 初期化時にends_atが相対値へ書き換わり、ends_at昇順がid昇順と一致しないことが保証される。
+	// これはORDER BY ends_at ASCをORDER BY id ASCに誤って書き換えるバグを検出するため。
+	wantOrder := []int64{4, 2, 8, 6, 10, 1, 3, 5, 7, 9}
+	for i, want := range wantOrder {
+		if list[i].ID != want {
+			t.Errorf("list[%d].ID = %d, want %d (ends_at ASC の期待順序)", i, list[i].ID, want)
 		}
-		if i > 0 && a.EndsAt.Before(list[i-1].EndsAt) {
-			t.Fatalf("list[%d].EndsAt %v < list[%d].EndsAt %v", i, a.EndsAt, i-1, list[i-1].EndsAt)
+	}
+	for i := 1; i < len(list); i++ {
+		if list[i].EndsAt.Before(list[i-1].EndsAt) {
+			t.Fatalf("list[%d].EndsAt %v < list[%d].EndsAt %v (ends_at order violation)", i, list[i].EndsAt, i-1, list[i-1].EndsAt)
 		}
 	}
 }
