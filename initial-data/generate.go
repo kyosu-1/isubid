@@ -14,7 +14,16 @@ type User struct {
 // generatedEpoch は live / upcoming の時刻を保持する固定基準。
 // POST /initialize がこの起点からのオフセットを現在時刻へ付け替える(spec 論点2)。
 // closed は過去データなので書き換えず、絶対時刻のまま置く。
-var generatedEpoch = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+//
+// 意図的に未来日付にしてある(過去日付に「整地」してはいけない)。ダンプ投入直後、
+// applyGeneratedSchedule が現在時刻基準へ書き換えるより前の一瞬、生成 live オークションの
+// ends_at はこのエポック起点のオフセットそのままの値になる。エポックが過去日付だと、その
+// 一瞬を runAuctionCloser (毎秒 status='live' AND ends_at<=NOW(6) を閉じるバッチ) が拾って
+// 全件を期限切れとみなし、won 通知を auto-increment id で挿入してしまう。すると
+// notifications の採番カウンタが1を超え、後続の 94_notifications.sql が id=1 から明示挿入
+// する際に Duplicate entry で衝突する(確率的に発生する初期化失敗。webapp/go/initialize.go
+// の generatedEpochLiteral と一致させること)。
+var generatedEpoch = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // closedBaseTime は closed オークションの ends_at を配置する基準。
 // 走行時刻に依存しない過去の絶対時刻。

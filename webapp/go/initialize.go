@@ -54,7 +54,15 @@ const seedMaxAuctionID = 12
 
 // generatedEpochLiteral は生成データが live/upcoming の時刻を保持する固定基準。
 // initial-data/generate.go の generatedEpoch と一致させること。
-const generatedEpochLiteral = "2000-01-01 00:00:00"
+//
+// 意図的に未来日付にしてある(過去日付に「整地」してはいけない)。ダンプ投入直後、
+// このUPDATEが走るより前の一瞬、生成 live オークションの ends_at はこのエポック起点の
+// オフセットそのままの値になる。エポックが過去日付だと、その一瞬を runAuctionCloser
+// (毎秒 status='live' AND ends_at<=NOW(6) を閉じるバッチ) が拾って全件を期限切れとみなし、
+// won 通知を auto-increment id で挿入してしまう。すると notifications の採番カウンタが
+// 1を超え、後続の 94_notifications.sql が id=1 から明示挿入する際に Duplicate entry で
+// 衝突する(確率的に発生する初期化失敗)。
+const generatedEpochLiteral = "2100-01-01 00:00:00"
 
 // applyGeneratedSchedule は生成データの live/upcoming を base 基準の時刻へ付け替える。
 //
