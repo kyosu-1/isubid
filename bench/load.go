@@ -299,6 +299,12 @@ func (s *Scenario) sellerIteration(ctx context.Context, step *isucandar.Benchmar
 	created, err := c.PostAuction(ctx, title, "ベンチが出品した椅子",
 		int64(1+rand.Intn(3)), startingPrice, duration)
 	if err != nil {
+		// 応答を受け取れなかっただけで、サーバー側では既にコミットされている可能性がある
+		// (in-flight commit)。この場合ベンチ側はauction IDを知り得ずListingを作れないため、
+		// Validationが「想定外のauction」と誤検知(false-FAIL)しうる。bidのIntent/Pending
+		// (C1)と対称な仕組みは作れない(先行して仮IDを発番できない)ため、件数だけを記録し
+		// Validation側で許容判定の材料にする。
+		s.Ledger.RecordUnknownListing()
 		addErr(ctx, step, ErrApplication, err)
 		return
 	}

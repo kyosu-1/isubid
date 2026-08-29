@@ -142,6 +142,24 @@ func TestLedgerListings(t *testing.T) {
 	}
 }
 
+// 出品の応答が失われた(結果不明)場合の件数だけを数える簡易な記録。
+// 個体を特定した突合はしない(RULING参照)。
+func TestLedgerUnknownListings(t *testing.T) {
+	l := NewLedger()
+	if got := l.UnknownListings(); got != 0 {
+		t.Fatalf("初期状態で %d件, want 0", got)
+	}
+	l.RecordUnknownListing()
+	l.RecordUnknownListing()
+	if got := l.UnknownListings(); got != 2 {
+		t.Fatalf("%d件, want 2", got)
+	}
+	l.RecordUnknownListing()
+	if got := l.UnknownListings(); got != 3 {
+		t.Fatalf("%d件, want 3", got)
+	}
+}
+
 func TestLedgerConcurrentRecord(t *testing.T) {
 	l := NewLedger()
 	var wg sync.WaitGroup

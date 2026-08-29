@@ -125,16 +125,34 @@ func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep
 	for _, li := range listings {
 		known[li.AuctionID] = true
 	}
+	// unknownListings > 0 の場合、POST /auctions の応答を受け取れなかった出品が存在する。
+	// サーバー側では既にコミットされている可能性があり(in-flight commit)、その出品は
+	// Listing を作れず known に含められない。そのため「想定外のauction」検知が
+	// false-FAIL になりうるので、この走行に限り critical から減点(application)へ
+	// 落とす。件数だけの簡易な突合(個体特定はしない)であるトレードオフとして、
+	// このケースの走行は既にPOST /auctionsのapplicationエラーを1件以上抱えているため、
+	// オペレーターは両方のシグナルを見ることになる。
+	unknownListings := s.Ledger.UnknownListings()
+	phantomAuctionCode := ErrCritical
+	if unknownListings > 0 {
+		phantomAuctionCode = ErrApplication
+	}
 	for auctionID := range acceptedByAuction {
 		if !known[auctionID] {
-			step.AddError(failure.NewError(ErrCritical,
-				fmt.Errorf("想定外のauctionに入札が受理された (auction %d)", auctionID)))
+			msg := fmt.Errorf("想定外のauctionに入札が受理された (auction %d)", auctionID)
+			if unknownListings > 0 {
+				msg = fmt.Errorf("%w (結果不明の出品が%d件あるため減点扱い)", msg, unknownListings)
+			}
+			step.AddError(failure.NewError(phantomAuctionCode, msg))
 		}
 	}
 	for auctionID := range pendingByAuction {
 		if !known[auctionID] {
-			step.AddError(failure.NewError(ErrCritical,
-				fmt.Errorf("想定外のauctionに未確定入札(pending)が存在 (auction %d)", auctionID)))
+			msg := fmt.Errorf("想定外のauctionに未確定入札(pending)が存在 (auction %d)", auctionID)
+			if unknownListings > 0 {
+				msg = fmt.Errorf("%w (結果不明の出品が%d件あるため減点扱い)", msg, unknownListings)
+			}
+			step.AddError(failure.NewError(phantomAuctionCode, msg))
 		}
 	}
 
