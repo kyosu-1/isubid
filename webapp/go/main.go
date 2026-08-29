@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -14,14 +15,23 @@ type handler struct {
 }
 
 func newRouter(db *sqlx.DB) http.Handler {
-	h := &handler{db: db}
+	return routerFor(&handler{db: db})
+}
+
+// routerFor は handler からルーターを組み立てる。
+// main はバッチ用に handler を先に作る必要があるため分離している。
+func routerFor(h *handler) http.Handler {
 	r := chi.NewRouter()
 	r.Post("/initialize", h.postInitialize)
 	r.Post("/register", h.postRegister)
 	r.Post("/login", h.postLogin)
 	r.Get("/auctions", h.getAuctions)
+	r.Post("/auctions", h.postAuction)
 	r.Get("/auctions/{id}", h.getAuction)
+	r.Get("/auctions/{id}/bids", h.getAuctionBids)
 	r.Post("/auctions/{id}/bids", h.postBid)
+	r.Get("/notifications", h.getNotifications)
+	r.Get("/stats/me", h.getStatsMe)
 	return r
 }
 
@@ -31,9 +41,12 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
+	h := &handler{db: db}
+	// 終了処理バッチ。テスト(newRouter経由)では起動しない。
+	go h.runAuctionCloser(context.Background())
 	addr := ":" + getEnv("ISUBID_PORT", "8000")
 	log.Printf("isubid listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, newRouter(db)))
+	log.Fatal(http.ListenAndServe(addr, routerFor(h)))
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

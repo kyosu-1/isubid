@@ -104,3 +104,49 @@ func reconcileAuction(auctionID int64, d *AuctionDetail, seedCount, seedCurrent 
 
 	return errs
 }
+
+// reconcileClosedAuction は closed になったオークションの落札結果を検証する。
+//
+// 落札者は「そのオークションの入札のうち最大額の入札者」でなければならない。これは
+// 参照実装が入札・終了処理の双方でオークション行を FOR UPDATE で保持するため、
+// 「入札がコミットされてから閉じる」か「閉じてから入札が400で弾かれる」のどちらかにしか
+// ならず、厳密に成立する不変条件である(中間状態が存在しない)。
+//
+// d.Bids 自体がベンチの台帳と一致していることは reconcileAuction が別途保証するので、
+// ここは d のスナップショット内部で完結した検査でよく、pending の許容も要らない。
+func reconcileClosedAuction(auctionID int64, d *AuctionDetail) []error {
+	if d.Status != "closed" {
+		return nil
+	}
+	var errs []error
+	if len(d.Bids) == 0 {
+		if d.WinnerID != nil || d.WinningPrice != nil {
+			errs = append(errs, fmt.Errorf("auction %d: 入札0件で closed なのに落札者がいる (winner=%v price=%v)",
+				auctionID, d.WinnerID, d.WinningPrice))
+		}
+		return errs
+	}
+	top := d.Bids[0]
+	for _, b := range d.Bids[1:] {
+		if b.Amount > top.Amount || (b.Amount == top.Amount && b.ID < top.ID) {
+			top = b
+		}
+	}
+	if d.WinnerID == nil || d.WinningPrice == nil {
+		errs = append(errs, fmt.Errorf("auction %d: closed なのに落札者が未設定 (期待: user=%d price=%d)",
+			auctionID, top.User.ID, top.Amount))
+		return errs
+	}
+	if *d.WinnerID != top.User.ID {
+		// winner_id が食い違っている時点で「誰が落札したか」の誤りは1件として扱う。
+		// この場合 winning_price も(誤った落札者に対応する額であれ何であれ)top.Amount と
+		// 一致しないのが通常なので、else if にして二重計上(同じ誤同定を2件のエラーとして
+		// 報告すること)を避ける。
+		errs = append(errs, fmt.Errorf("auction %d: winner_id が %d (期待: %d = 最高額 %d の入札者)",
+			auctionID, *d.WinnerID, top.User.ID, top.Amount))
+	} else if *d.WinningPrice != top.Amount {
+		errs = append(errs, fmt.Errorf("auction %d: winning_price が %d (期待: %d)",
+			auctionID, *d.WinningPrice, top.Amount))
+	}
+	return errs
+}

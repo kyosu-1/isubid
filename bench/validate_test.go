@@ -1,129 +1,224 @@
 package main
 
 import (
+	"sort"
 	"strings"
 	"testing"
 	"time"
 )
 
 func seedList() []AuctionSummary {
-	base := AuctionSummary{
-		CategoryID: 1,
-		StartsAt:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		EndsAt:     time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
-		Status:     "live",
+	// Independent hand-typed literals to catch drift in expectedInitialAuctions.
+	// Built in ends_at order (initialAuctionOrder) to match real app behavior.
+	base := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	return []AuctionSummary{
+		// ID 4: ends_at offset 12s
+		{
+			ID:           4,
+			Title:        "メッシュフロー 40",
+			CategoryID:   1,
+			CurrentPrice: 4100,
+			BidCount:     1,
+			Seller:       User{ID: 4, Name: "seed_user_04"},
+			EndsAt:       base.Add(12 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		// ID 2: ends_at offset 20s
+		{
+			ID:           2,
+			Title:        "エルゴホスト Model E",
+			CategoryID:   1,
+			CurrentPrice: 2100,
+			BidCount:     1,
+			Seller:       User{ID: 2, Name: "seed_user_02"},
+			EndsAt:       base.Add(20 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		// ID 8: ends_at offset 28s
+		{
+			ID:           8,
+			Title:        "チャーチチェア 1920",
+			CategoryID:   3,
+			CurrentPrice: 4000,
+			BidCount:     0,
+			Seller:       User{ID: 8, Name: "seed_user_08"},
+			EndsAt:       base.Add(28 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		// ID 6: ends_at offset 36s
+		{
+			ID:           6,
+			Title:        "ネオンストライク Z",
+			CategoryID:   2,
+			CurrentPrice: 3000,
+			BidCount:     0,
+			Seller:       User{ID: 6, Name: "seed_user_06"},
+			EndsAt:       base.Add(36 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		// ID 10: ends_at offset 44s
+		{
+			ID:           10,
+			Title:        "コンパクトワーク 01",
+			CategoryID:   1,
+			CurrentPrice: 5000,
+			BidCount:     0,
+			Seller:       User{ID: 10, Name: "seed_user_10"},
+			EndsAt:       base.Add(44 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		// ID 1: ends_at offset 3600s
+		{
+			ID:           1,
+			Title:        "ヘリテージ・ウィングチェア",
+			CategoryID:   3,
+			CurrentPrice: 1500,
+			BidCount:     3,
+			Seller:       User{ID: 1, Name: "seed_user_01"},
+			EndsAt:       base.Add(3600 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		// ID 3: ends_at offset 3660s
+		{
+			ID:           3,
+			Title:        "ISUレーサー GT",
+			CategoryID:   2,
+			CurrentPrice: 3100,
+			BidCount:     1,
+			Seller:       User{ID: 3, Name: "seed_user_03"},
+			EndsAt:       base.Add(3660 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		// ID 5: ends_at offset 3720s
+		{
+			ID:           5,
+			Title:        "ミッドセンチュリー・ラウンジ",
+			CategoryID:   3,
+			CurrentPrice: 2500,
+			BidCount:     0,
+			Seller:       User{ID: 5, Name: "seed_user_05"},
+			EndsAt:       base.Add(3720 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		// ID 7: ends_at offset 3780s
+		{
+			ID:           7,
+			Title:        "スタンドフレックス",
+			CategoryID:   1,
+			CurrentPrice: 3500,
+			BidCount:     0,
+			Seller:       User{ID: 7, Name: "seed_user_07"},
+			EndsAt:       base.Add(3780 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		// ID 9: ends_at offset 3840s
+		{
+			ID:           9,
+			Title:        "プロシート・エディション",
+			CategoryID:   2,
+			CurrentPrice: 4500,
+			BidCount:     0,
+			Seller:       User{ID: 9, Name: "seed_user_09"},
+			EndsAt:       base.Add(3840 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
 	}
-	mk := func(id int64, title string, price, count int64, seller int64) AuctionSummary {
-		a := base
-		a.ID = id
-		a.Title = title
-		a.CurrentPrice = price
-		a.BidCount = count
-		a.Seller = User{ID: seller, Name: "seed_user_" + pad2(seller)}
-		a.EndsAt = time.Date(2030, 1, 1, int(id), 0, 0, 0, time.UTC)
-		return a
-	}
-	list := []AuctionSummary{
-		mk(1, "ヘリテージ・ウィングチェア", 1500, 3, 1),
-		mk(2, "エルゴホスト Model E", 2100, 1, 2),
-		mk(3, "ISUレーサー GT", 3100, 1, 3),
-		mk(4, "メッシュフロー 40", 4100, 1, 4),
-		mk(5, "ミッドセンチュリー・ラウンジ", 2500, 0, 5),
-		mk(6, "ネオンストライク Z", 3000, 0, 6),
-		mk(7, "スタンドフレックス", 3500, 0, 7),
-		mk(8, "チャーチチェア 1920", 4000, 0, 8),
-		mk(9, "プロシート・エディション", 4500, 0, 9),
-		mk(10, "コンパクトワーク 01", 5000, 0, 10),
-	}
-	// Set correct CategoryID values per auction
-	list[0].CategoryID = 3  // auction 1
-	list[1].CategoryID = 1  // auction 2
-	list[2].CategoryID = 2  // auction 3
-	list[3].CategoryID = 1  // auction 4
-	list[4].CategoryID = 3  // auction 5
-	list[5].CategoryID = 2  // auction 6
-	list[6].CategoryID = 1  // auction 7
-	list[7].CategoryID = 3  // auction 8
-	list[8].CategoryID = 2  // auction 9
-	list[9].CategoryID = 1  // auction 10
-	return list
 }
 
 func TestValidateInitialAuctionListOK(t *testing.T) {
-	if err := ValidateInitialAuctionList(seedList()); err != nil {
+	base := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	if err := ValidateInitialAuctionList(seedList(), base); err != nil {
 		t.Errorf("want nil, got %v", err)
 	}
 }
 
 func TestValidateInitialAuctionListWrongPrice(t *testing.T) {
+	base := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	list := seedList()
 	list[0].CurrentPrice = 9999
-	err := ValidateInitialAuctionList(list)
+	err := ValidateInitialAuctionList(list, base)
 	if err == nil || !strings.Contains(err.Error(), "current_price") {
 		t.Errorf("want current_price error, got %v", err)
 	}
 }
 
 func TestValidateInitialAuctionListWrongCount(t *testing.T) {
-	err := ValidateInitialAuctionList(seedList()[:9])
+	base := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	err := ValidateInitialAuctionList(seedList()[:9], base)
 	if err == nil {
 		t.Error("want error for missing auction, got nil")
 	}
 }
 
 func TestValidateInitialAuctionListWrongOrder(t *testing.T) {
+	base := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	list := seedList()
 	list[0], list[1] = list[1], list[0]
-	err := ValidateInitialAuctionList(list)
+	err := ValidateInitialAuctionList(list, base)
 	if err == nil {
 		t.Error("want order error, got nil")
 	}
 }
 
 func TestValidateInitialAuctionListWrongEndsAtOrder(t *testing.T) {
-	// IDs are correct 1..10, but one entry's EndsAt is earlier than predecessor
+	// IDs are in ends_at order, but one entry's EndsAt is earlier than predecessor
+	base := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	list := seedList()
 	list[4].EndsAt = list[3].EndsAt.Add(-time.Hour)
-	err := ValidateInitialAuctionList(list)
+	err := ValidateInitialAuctionList(list, base)
 	if err == nil || !strings.Contains(err.Error(), "ends_at") {
 		t.Errorf("want ends_at error, got %v", err)
 	}
 }
 
 func TestValidateInitialAuctionListNotLive(t *testing.T) {
+	base := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	list := seedList()
 	list[3].Status = "closed"
-	err := ValidateInitialAuctionList(list)
+	err := ValidateInitialAuctionList(list, base)
 	if err == nil || !strings.Contains(err.Error(), "status") {
 		t.Errorf("want status error, got %v", err)
 	}
 }
 
 func TestValidateInitialAuctionListWrongSeller(t *testing.T) {
+	base := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	list := seedList()
 	list[0].Seller.Name = "hacker"
-	err := ValidateInitialAuctionList(list)
+	err := ValidateInitialAuctionList(list, base)
 	if err == nil || !strings.Contains(err.Error(), "seller") {
 		t.Errorf("want seller error, got %v", err)
 	}
 }
 
 func TestValidateInitialAuctionListWrongCategory(t *testing.T) {
+	base := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	list := seedList()
 	list[0].CategoryID = 99
-	err := ValidateInitialAuctionList(list)
+	err := ValidateInitialAuctionList(list, base)
 	if err == nil || !strings.Contains(err.Error(), "category_id") {
 		t.Errorf("want category_id error, got %v", err)
 	}
 }
 
 func TestValidateInitialAuctionListWrongEndsAtValue(t *testing.T) {
+	base := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	list := seedList()
-	// idの並びは正しいが ends_at の絶対値が期待とずれている(全体を+1日シフト)
+	// ends_at の相対値が期待とずれている(全体を+1日シフト)
 	for i := range list {
 		list[i].EndsAt = list[i].EndsAt.Add(24 * time.Hour)
 	}
-	err := ValidateInitialAuctionList(list)
+	err := ValidateInitialAuctionList(list, base)
 	if err == nil || !strings.Contains(err.Error(), "ends_at") {
 		t.Errorf("want ends_at value error, got %v", err)
 	}
@@ -374,5 +469,128 @@ func TestValidateBidReflectedWrongContent(t *testing.T) {
 	}
 	if err := ValidateBidReflected(d2, &BidCreated{ID: 100, UserID: 5, Amount: 1600, AuctionID: 1}); err == nil {
 		t.Error("want current_price error, got nil")
+	}
+}
+
+// フィードは id ASC で、since より大きい id のみを含み、金額が厳密単調増加になる。
+// (受理順 = id 昇順であり、入札は現在最高額を必ず上回るため)
+func TestValidateFeedPage(t *testing.T) {
+	t0 := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	ok := []Bid{
+		{ID: 11, User: User{ID: 2}, Amount: 1000, CreatedAt: t0},
+		{ID: 12, User: User{ID: 3}, Amount: 1200, CreatedAt: t0.Add(time.Second)},
+		{ID: 13, User: User{ID: 4}, Amount: 1500, CreatedAt: t0.Add(2 * time.Second)},
+	}
+	if err := ValidateFeedPage(ok, 10); err != nil {
+		t.Fatalf("正しいフィードが拒否された: %v", err)
+	}
+	if err := ValidateFeedPage(nil, 10); err != nil {
+		t.Errorf("空フィードが拒否された: %v", err)
+	}
+
+	// since 以下の id が混ざっている
+	withOld := append([]Bid{{ID: 9, User: User{ID: 2}, Amount: 900, CreatedAt: t0}}, ok...)
+	if err := ValidateFeedPage(withOld, 10); err == nil {
+		t.Error("since 以下の id が検出されなかった")
+	}
+
+	// id が降順
+	desc := []Bid{ok[2], ok[1], ok[0]}
+	if err := ValidateFeedPage(desc, 10); err == nil {
+		t.Error("id 降順が検出されなかった")
+	}
+
+	// 金額が単調増加でない(同額) = FOR UPDATE 不在の兆候
+	sameAmount := []Bid{
+		{ID: 11, User: User{ID: 2}, Amount: 1000, CreatedAt: t0},
+		{ID: 12, User: User{ID: 3}, Amount: 1000, CreatedAt: t0.Add(time.Second)},
+	}
+	if err := ValidateFeedPage(sameAmount, 10); err == nil {
+		t.Error("同額(単調増加違反)が検出されなかった")
+	}
+}
+
+// ends_at は「initialize 応答受信時刻 + オフセット」± 許容幅で照合する。
+func TestValidateInitialAuctionListRelativeEndsAt(t *testing.T) {
+	base := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	build := func(mutate func(list []AuctionSummary)) []AuctionSummary {
+		list := make([]AuctionSummary, 0, len(initialAuctionOrder))
+		for _, id := range initialAuctionOrder {
+			w := expectedInitialAuctions[id]
+			list = append(list, AuctionSummary{
+				ID:           id,
+				Title:        w.Title,
+				CategoryID:   w.CategoryID,
+				Seller:       User{ID: w.SellerID, Name: "seed_user_" + pad2(w.SellerID)},
+				CurrentPrice: w.CurrentPrice,
+				BidCount:     w.BidCount,
+				EndsAt:       base.Add(time.Duration(w.EndsAtOffset) * time.Second),
+				Status:       "live",
+			})
+		}
+		if mutate != nil {
+			mutate(list)
+		}
+		return list
+	}
+
+	if err := ValidateInitialAuctionList(build(nil), base); err != nil {
+		t.Fatalf("正しい一覧が拒否された: %v", err)
+	}
+
+	// 許容幅の内側(3秒ずれ)は通る
+	if err := ValidateInitialAuctionList(build(func(l []AuctionSummary) {
+		l[0].EndsAt = l[0].EndsAt.Add(3 * time.Second)
+	}), base); err != nil {
+		t.Errorf("許容幅内のずれが拒否された: %v", err)
+	}
+
+	// 許容幅の外側(30秒ずれ)は落ちる
+	if err := ValidateInitialAuctionList(build(func(l []AuctionSummary) {
+		l[0].EndsAt = l[0].EndsAt.Add(30 * time.Second)
+	}), base); err == nil {
+		t.Error("許容幅外のずれが検出されなかった")
+	}
+
+	// id 昇順に並べ替えたもの(= ORDER BY id ASC 相当)は落ちる
+	if err := ValidateInitialAuctionList(build(func(l []AuctionSummary) {
+		sort.Slice(l, func(i, j int) bool { return l[i].ID < l[j].ID })
+	}), base); err == nil {
+		t.Error("ORDER BY id ASC 相当の並びが検出されなかった")
+	}
+}
+
+// ends_at を過ぎたオークションは closed になっていなければならない
+// (終了処理バッチが止まっていることの検出)。
+func TestValidateAuctionClosedIfDue(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	grace := 5 * time.Second
+
+	// 期限を大きく過ぎているのに live → 違反
+	overdue := &AuctionDetail{AuctionSummary: AuctionSummary{
+		ID: 1, Status: "live", EndsAt: now.Add(-30 * time.Second)}}
+	if err := ValidateAuctionClosedIfDue(overdue, now, grace); err == nil {
+		t.Error("期限切れ live が検出されなかった")
+	}
+
+	// 期限直後(猶予の内側)は許容
+	justEnded := &AuctionDetail{AuctionSummary: AuctionSummary{
+		ID: 1, Status: "live", EndsAt: now.Add(-2 * time.Second)}}
+	if err := ValidateAuctionClosedIfDue(justEnded, now, grace); err != nil {
+		t.Errorf("猶予内の live が拒否された: %v", err)
+	}
+
+	// 期限前の live は当然OK
+	future := &AuctionDetail{AuctionSummary: AuctionSummary{
+		ID: 1, Status: "live", EndsAt: now.Add(time.Hour)}}
+	if err := ValidateAuctionClosedIfDue(future, now, grace); err != nil {
+		t.Errorf("期限前の live が拒否された: %v", err)
+	}
+
+	// closed ならいつでもOK
+	closed := &AuctionDetail{AuctionSummary: AuctionSummary{
+		ID: 1, Status: "closed", EndsAt: now.Add(-30 * time.Second)}}
+	if err := ValidateAuctionClosedIfDue(closed, now, grace); err != nil {
+		t.Errorf("closed が拒否された: %v", err)
 	}
 }

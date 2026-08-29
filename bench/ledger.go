@@ -25,11 +25,20 @@ type PendingBid struct {
 	Amount    int64
 }
 
+// Listing はベンチが出品したオークションの記録。Validation の検証対象に含めるために使う。
+type Listing struct {
+	AuctionID     int64
+	SellerID      int64
+	StartingPrice int64
+}
+
 type Ledger struct {
-	mu       sync.Mutex
-	accepted map[int64][]AcceptedBid // auctionID -> bids
-	pending  map[int64]PendingBid    // intentID -> pending bid
-	nextID   int64
+	mu              sync.Mutex
+	accepted        map[int64][]AcceptedBid // auctionID -> bids
+	pending         map[int64]PendingBid    // intentID -> pending bid
+	listings        []Listing
+	unknownListings int
+	nextID          int64
 }
 
 func NewLedger() *Ledger {
@@ -109,4 +118,38 @@ func (l *Ledger) PendingByAuction() map[int64][]PendingBid {
 		out[p.AuctionID] = append(out[p.AuctionID], p)
 	}
 	return out
+}
+
+func (l *Ledger) RecordListing(li Listing) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.listings = append(l.listings, li)
+}
+
+// Listings は出品記録のコピーを返す。
+func (l *Ledger) Listings() []Listing {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]Listing, len(l.listings))
+	copy(out, l.listings)
+	return out
+}
+
+// RecordUnknownListing は POST /auctions の応答が届かなかった(結果不明)ことを記録する。
+// 応答を受け取れなかっただけで、サーバー側では既にコミットされている可能性がある
+// (in-flight commit)。この場合ベンチ側はauction IDを知り得ないため Listing を作れず、
+// Validation はそのオークションを「想定外のauction」として誤検知(false-FAIL)しうる。
+// bidの Intent/Pending(C1)と異なり、出品側は先行して仮IDを発番できないため対称な仕組みは
+// 作れず、ここでは件数だけを数える簡易な形にとどめる(個体を特定した突合はしない)。
+func (l *Ledger) RecordUnknownListing() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.unknownListings++
+}
+
+// UnknownListings は結果不明のまま残っている出品の件数を返す。
+func (l *Ledger) UnknownListings() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.unknownListings
 }

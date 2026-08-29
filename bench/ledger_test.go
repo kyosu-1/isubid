@@ -111,6 +111,55 @@ func TestLedgerConcurrentIntentConfirmReject(t *testing.T) {
 	}
 }
 
+// 出品台帳は Validation が新規オークションを検証対象に含めるために使う。
+func TestLedgerListings(t *testing.T) {
+	l := NewLedger()
+	if got := l.Listings(); len(got) != 0 {
+		t.Fatalf("初期状態で %d件, want 0", len(got))
+	}
+	l.RecordListing(Listing{AuctionID: 13, SellerID: 3, StartingPrice: 5000})
+	l.RecordListing(Listing{AuctionID: 14, SellerID: 4, StartingPrice: 6000})
+
+	got := l.Listings()
+	if len(got) != 2 {
+		t.Fatalf("%d件, want 2", len(got))
+	}
+	byID := map[int64]Listing{}
+	for _, li := range got {
+		byID[li.AuctionID] = li
+	}
+	if byID[13].StartingPrice != 5000 || byID[13].SellerID != 3 {
+		t.Errorf("auction 13 = %+v", byID[13])
+	}
+	if byID[14].StartingPrice != 6000 {
+		t.Errorf("auction 14 = %+v", byID[14])
+	}
+
+	// 返り値はコピーであること(以降の RecordListing に影響されない)
+	l.RecordListing(Listing{AuctionID: 15, SellerID: 5, StartingPrice: 7000})
+	if len(got) != 2 {
+		t.Errorf("返り値が共有されている: %d件", len(got))
+	}
+}
+
+// 出品の応答が失われた(結果不明)場合の件数だけを数える簡易な記録。
+// 個体を特定した突合はしない(RULING参照)。
+func TestLedgerUnknownListings(t *testing.T) {
+	l := NewLedger()
+	if got := l.UnknownListings(); got != 0 {
+		t.Fatalf("初期状態で %d件, want 0", got)
+	}
+	l.RecordUnknownListing()
+	l.RecordUnknownListing()
+	if got := l.UnknownListings(); got != 2 {
+		t.Fatalf("%d件, want 2", got)
+	}
+	l.RecordUnknownListing()
+	if got := l.UnknownListings(); got != 3 {
+		t.Fatalf("%d件, want 3", got)
+	}
+}
+
 func TestLedgerConcurrentRecord(t *testing.T) {
 	l := NewLedger()
 	var wg sync.WaitGroup

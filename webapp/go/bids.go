@@ -93,6 +93,25 @@ func (h *handler) postBid(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// 意図的に遅い実装: 高値更新のたび、そのオークションに入札済みの全ユーザーへ
+	// 1行ずつ INSERT する(バルクINSERTにしない)。入札APIが重い主因。
+	var targets []int64
+	if err := tx.SelectContext(r.Context(), &targets,
+		"SELECT DISTINCT user_id FROM bids WHERE auction_id = ? AND user_id <> ?",
+		auctionID, userID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	message := "「" + truncateForNotification(a.Title) + "」で他のユーザーに競り負けました"
+	for _, uid := range targets {
+		if _, err := tx.ExecContext(r.Context(),
+			"INSERT INTO notifications (user_id, type, auction_id, message) VALUES (?, 'outbid', ?, ?)",
+			uid, auctionID, message); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

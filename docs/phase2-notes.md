@@ -30,6 +30,11 @@ Phase 1ブランチ全体レビュー(2d266e0..a452005)で「マージ可」と�
 - セカンダリインデックスなし(00_schema.sql)
 - nginx: upstream keep-alive なし、静的配信もアプリ経由(dev/nginx.conf)
 - `db.SetMaxOpenConns(10)`(db.go)
+- 入札フィード: `auction_id` インデックス無しのフルスキャン + 入札ごとの user 名 N+1(feed.go)
+- 通知一覧: `user_id` インデックス無しのフルスキャン(notifications.go)
+- 通知ファンアウト: 入札トランザクション内で入札者ごとに1行ずつ INSERT(bids.go)
+- 終了処理バッチ: 毎秒フルスキャン + 1件ずつ逐次処理 + `bids` の非インデックス走査(closer.go)
+- `GET /stats/me`: `seller_id` インデックス無しの全走査を4クエリに分けて実行(stats.go)
 
 ## その他メモ
 

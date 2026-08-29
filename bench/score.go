@@ -6,16 +6,22 @@ import (
 )
 
 const (
-	ScoreGETList   score.ScoreTag = "GET /auctions"
-	ScoreGETDetail score.ScoreTag = "GET /auctions/:id"
-	ScorePOSTBid   score.ScoreTag = "POST /auctions/:id/bids"
+	ScoreGETList          score.ScoreTag = "GET /auctions"
+	ScoreGETDetail        score.ScoreTag = "GET /auctions/:id"
+	ScorePOSTBid          score.ScoreTag = "POST /auctions/:id/bids"
+	ScoreGETFeed          score.ScoreTag = "GET /auctions/:id/bids"
+	ScoreGETNotifications score.ScoreTag = "GET /notifications"
+	ScorePOSTAuction      score.ScoreTag = "POST /auctions"
 )
 
 // 配点(スペック準拠: 入札が主役)
 var scoreTable = map[score.ScoreTag]int64{
-	ScoreGETList:   1,
-	ScoreGETDetail: 1,
-	ScorePOSTBid:   5,
+	ScoreGETList:          1,
+	ScoreGETDetail:        1,
+	ScorePOSTBid:          5,
+	ScoreGETFeed:          1,
+	ScoreGETNotifications: 2,
+	ScorePOSTAuction:      5,
 }
 
 const (

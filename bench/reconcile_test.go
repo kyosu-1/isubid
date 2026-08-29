@@ -112,9 +112,9 @@ func TestReconcileAuction(t *testing.T) {
 					seedBid(1, t0),
 				},
 			},
-			seedCount:  1,
-			seedPrice:  1000,
-			accepted:   []AcceptedBid{{BidID: 9, AuctionID: 1, UserID: 5, Amount: 1600}},
+			seedCount: 1,
+			seedPrice: 1000,
+			accepted:  []AcceptedBid{{BidID: 9, AuctionID: 1, UserID: 5, Amount: 1600}},
 			// current_price(1600) == expected(max(seed 1000, accepted 1600)) なので価格チェックは通る。
 			// 改変チェックのみ1件。
 			wantErrLen: 1,
@@ -149,5 +149,91 @@ func TestReconcileAuctionPendingConsumedOncePerMatch(t *testing.T) {
 	errs := reconcileAuction(1, d, 0, 1000, nil, pending)
 	if len(errs) != 2 {
 		t.Fatalf("reconcileAuction() = %v errors (%v), want exactly 2 (one bid unexplained + monotonic violation from equal amounts)", len(errs), errs)
+	}
+}
+
+// 落札者は「そのオークションの入札の最大額の入札者」でなければならない。
+// d.Bids 自体が台帳と一致していることは reconcileAuction が別途保証するので、
+// ここは d のスナップショット内部の不変条件として厳密に検査できる。
+func TestReconcileClosedAuction(t *testing.T) {
+	t0 := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	ptr := func(v int64) *int64 { return &v }
+	// created_at DESC, 金額は厳密単調減少(受理順で単調増加)
+	bids := []Bid{
+		{ID: 12, User: User{ID: 7}, Amount: 1800, CreatedAt: t0.Add(2 * time.Minute)},
+		{ID: 11, User: User{ID: 5}, Amount: 1600, CreatedAt: t0.Add(time.Minute)},
+	}
+
+	tests := []struct {
+		name       string
+		d          *AuctionDetail
+		wantErrLen int
+	}{
+		{
+			name: "live は対象外",
+			d: &AuctionDetail{
+				AuctionSummary: AuctionSummary{ID: 1, Status: "live"},
+				Bids:           bids,
+			},
+			wantErrLen: 0,
+		},
+		{
+			name: "closed / 最高額入札者が落札者",
+			d: &AuctionDetail{
+				AuctionSummary: AuctionSummary{ID: 1, Status: "closed"},
+				WinnerID:       ptr(7), WinningPrice: ptr(1800),
+				Bids: bids,
+			},
+			wantErrLen: 0,
+		},
+		{
+			name: "closed / 落札者が最高額でない",
+			d: &AuctionDetail{
+				AuctionSummary: AuctionSummary{ID: 1, Status: "closed"},
+				WinnerID:       ptr(5), WinningPrice: ptr(1600),
+				Bids: bids,
+			},
+			wantErrLen: 1,
+		},
+		{
+			name: "closed / 落札額だけずれている",
+			d: &AuctionDetail{
+				AuctionSummary: AuctionSummary{ID: 1, Status: "closed"},
+				WinnerID:       ptr(7), WinningPrice: ptr(1700),
+				Bids: bids,
+			},
+			wantErrLen: 1,
+		},
+		{
+			name: "closed / 入札があるのに落札者なし",
+			d: &AuctionDetail{
+				AuctionSummary: AuctionSummary{ID: 1, Status: "closed"},
+				Bids:           bids,
+			},
+			wantErrLen: 1,
+		},
+		{
+			name: "closed / 入札0件なら落札者は null",
+			d: &AuctionDetail{
+				AuctionSummary: AuctionSummary{ID: 1, Status: "closed"},
+			},
+			wantErrLen: 0,
+		},
+		{
+			name: "closed / 入札0件なのに落札者がいる",
+			d: &AuctionDetail{
+				AuctionSummary: AuctionSummary{ID: 1, Status: "closed"},
+				WinnerID:       ptr(7), WinningPrice: ptr(1800),
+			},
+			wantErrLen: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := reconcileClosedAuction(1, tt.d)
+			if len(errs) != tt.wantErrLen {
+				t.Fatalf("errs = %d件 %v, want %d件", len(errs), errs, tt.wantErrLen)
+			}
+		})
 	}
 }

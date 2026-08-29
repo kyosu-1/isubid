@@ -12,6 +12,7 @@ import (
 
 	"github.com/isucon/isucandar"
 	"github.com/isucon/isucandar/failure"
+	"github.com/isucon/isucandar/pubsub"
 	"github.com/isucon/isucandar/worker"
 )
 
@@ -21,7 +22,21 @@ type Scenario struct {
 	PrepareOnly bool
 	Bidders     int
 	Watchers    int
+	Notifiers   int
+	Sellers     int
+	Listings    *pubsub.PubSub
+	Board       *listingBoard
 	Ledger      *Ledger
+}
+
+// newListingPubSub は出品配信用の PubSub を作る。
+// pubsub.Publish は購読チャネルが満杯だとブロックし、その状態で購読側が
+// ctx キャンセルで閉じようとすると相互にロック待ちになりうる。
+// 購読ハンドラは即座に返る実装だが、念のため十分な容量を確保しておく。
+func newListingPubSub() *pubsub.PubSub {
+	ps := pubsub.NewPubSub()
+	ps.Capacity = 1000
+	return ps
 }
 
 func randomName(prefix string) string {
@@ -30,13 +45,22 @@ func randomName(prefix string) string {
 	return prefix + hex.EncodeToString(b)
 }
 
-// Load は入札者(bidderIteration)とウォッチャー(watcherIteration)の2種の
-// worker を無限ループで並行実行し、ctx(WithLoadTimeout)がキャンセルされるまで走らせる。
+// Load は入札者(bidderIteration)・ウォッチャー(watcherIteration)・
+// 通知閲覧者(notifierIteration)・出品者(sellerIteration)の4種の worker を
+// 無限ループで並行実行し、ctx(WithLoadTimeout)がキャンセルされるまで走らせる。
 // (isucandarのLoadは削除するとParallel実行系の前提が崩れるため、no-opでも定義必須)
 func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) error {
 	if s.PrepareOnly {
 		return nil
 	}
+	// 購読は worker 起動前に張る。ハンドラはスライス追記だけで即座に返るため
+	// Publish 側がブロックしない。Capacity にも十分な余裕を持たせておく。
+	s.Board = &listingBoard{}
+	s.Listings.Subscribe(ctx, func(v interface{}) {
+		if id, ok := v.(int64); ok {
+			s.Board.add(id)
+		}
+	})
 	bidder, err := worker.NewWorker(func(ctx context.Context, _ int) {
 		s.bidderIteration(ctx, step)
 	}, worker.WithInfinityLoop(), worker.WithMaxParallelism(int32(s.Bidders)))
@@ -49,10 +73,24 @@ func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) erro
 	if err != nil {
 		return err
 	}
+	notifier, err := worker.NewWorker(func(ctx context.Context, _ int) {
+		s.notifierIteration(ctx, step)
+	}, worker.WithInfinityLoop(), worker.WithMaxParallelism(int32(s.Notifiers)))
+	if err != nil {
+		return err
+	}
+	seller, err := worker.NewWorker(func(ctx context.Context, _ int) {
+		s.sellerIteration(ctx, step)
+	}, worker.WithInfinityLoop(), worker.WithMaxParallelism(int32(s.Sellers)))
+	if err != nil {
+		return err
+	}
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(4)
 	go func() { defer wg.Done(); bidder.Process(ctx) }()
 	go func() { defer wg.Done(); watcher.Process(ctx) }()
+	go func() { defer wg.Done(); notifier.Process(ctx) }()
+	go func() { defer wg.Done(); seller.Process(ctx) }()
 	wg.Wait()
 	return nil
 }
@@ -64,9 +102,13 @@ func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) erro
 // 入札は、サーバー側では既にコミットされている可能性があるため、pendingとして
 // 突き合わせに使うことでfalse-FAILを避ける(C1)。
 //
-// 想定していないauctionへの記録(バグでもない限り起こらない)は即critical。
-// 各auctionはid<=10全件を検査する(Loadでベンチが一度も触れなかったauctionでも、
-// シード入札が消えていないかは検証したいため)。
+// 想定していないauctionへの記録は、通常は即critical。ただし出品(POST /auctions)の応答が
+// 受け取れず結果不明の出品(unknownListings > 0)が1件でもある走行に限り、その出品が
+// Listingを作れず「想定外」と誤検知されている可能性があるため、この走行全体で
+// application へ格下げする(詳細は unknownListings を使っている箇所のコメント参照)。
+// 検査対象は id<=10 の初期シードauction全件(Loadでベンチが一度も触れなかったauctionでも、
+// シード入札が消えていないかは検証したいため)に加え、ベンチが Load 中に出品した
+// listing(s.Ledger.Listings())全件も同様に突合する。
 func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep) error {
 	if s.PrepareOnly {
 		return nil
@@ -78,20 +120,48 @@ func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep
 
 	acceptedByAuction := s.Ledger.ByAuction()
 	pendingByAuction := s.Ledger.PendingByAuction()
+	listings := s.Ledger.Listings()
 
+	// ベンチが知っているオークション = 初期データ ∪ ベンチが出品したもの
+	known := map[int64]bool{}
+	for id := range expectedInitialAuctions {
+		known[id] = true
+	}
+	for _, li := range listings {
+		known[li.AuctionID] = true
+	}
+	// unknownListings > 0 の場合、POST /auctions の応答を受け取れなかった出品が存在する。
+	// サーバー側では既にコミットされている可能性があり(in-flight commit)、その出品は
+	// Listing を作れず known に含められない。そのため「想定外のauction」検知が
+	// false-FAIL になりうるので、この走行に限り critical から減点(application)へ
+	// 落とす。件数だけの簡易な突合(個体特定はしない)であるトレードオフとして、
+	// このケースの走行は既にPOST /auctionsのapplicationエラーを1件以上抱えているため、
+	// オペレーターは両方のシグナルを見ることになる。
+	unknownListings := s.Ledger.UnknownListings()
+	phantomAuctionCode := ErrCritical
+	if unknownListings > 0 {
+		phantomAuctionCode = ErrApplication
+	}
 	for auctionID := range acceptedByAuction {
-		if _, ok := expectedInitialAuctions[auctionID]; !ok {
-			step.AddError(failure.NewError(ErrCritical,
-				fmt.Errorf("想定外のauctionに入札が受理された (auction %d)", auctionID)))
+		if !known[auctionID] {
+			msg := fmt.Errorf("想定外のauctionに入札が受理された (auction %d)", auctionID)
+			if unknownListings > 0 {
+				msg = fmt.Errorf("%w (結果不明の出品が%d件あるため減点扱い)", msg, unknownListings)
+			}
+			step.AddError(failure.NewError(phantomAuctionCode, msg))
 		}
 	}
 	for auctionID := range pendingByAuction {
-		if _, ok := expectedInitialAuctions[auctionID]; !ok {
-			step.AddError(failure.NewError(ErrCritical,
-				fmt.Errorf("想定外のauctionに未確定入札(pending)が存在 (auction %d)", auctionID)))
+		if !known[auctionID] {
+			msg := fmt.Errorf("想定外のauctionに未確定入札(pending)が存在 (auction %d)", auctionID)
+			if unknownListings > 0 {
+				msg = fmt.Errorf("%w (結果不明の出品が%d件あるため減点扱い)", msg, unknownListings)
+			}
+			step.AddError(failure.NewError(phantomAuctionCode, msg))
 		}
 	}
 
+	winners := map[int64]int64{} // auctionID -> winnerID
 	for auctionID, want := range expectedInitialAuctions {
 		// M1: GetAuctionは一過性エラーの影響を減らすため軽いbackoff付きで最大3回試行する。
 		d, err := c.GetAuctionRetry(ctx, auctionID, 3, 100*time.Millisecond)
@@ -103,8 +173,124 @@ func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep
 			acceptedByAuction[auctionID], pendingByAuction[auctionID]) {
 			step.AddError(failure.NewError(ErrCritical, e))
 		}
+		for _, e := range reconcileClosedAuction(auctionID, d) {
+			step.AddError(failure.NewError(ErrCritical, e))
+		}
+		if err := ValidateAuctionClosedIfDue(d, time.Now().UTC(), closeGrace); err != nil {
+			step.AddError(failure.NewError(ErrCritical, err))
+		}
+		if d.Status == "closed" && d.WinnerID != nil {
+			winners[auctionID] = *d.WinnerID
+		}
 	}
+	for _, li := range listings {
+		d, err := c.GetAuctionRetry(ctx, li.AuctionID, 3, 100*time.Millisecond)
+		if err != nil {
+			step.AddError(failure.NewError(ErrCritical, fmt.Errorf("auction %d: %w", li.AuctionID, err)))
+			continue
+		}
+		for _, e := range reconcileAuction(li.AuctionID, d, 0, li.StartingPrice,
+			acceptedByAuction[li.AuctionID], pendingByAuction[li.AuctionID]) {
+			step.AddError(failure.NewError(ErrCritical, e))
+		}
+		for _, e := range reconcileClosedAuction(li.AuctionID, d) {
+			step.AddError(failure.NewError(ErrCritical, e))
+		}
+		// listingCloseGrace を使う(closeGraceではない): 理由は同定数のコメント参照。
+		if err := ValidateAuctionClosedIfDue(d, time.Now().UTC(), listingCloseGrace); err != nil {
+			step.AddError(failure.NewError(ErrCritical, err))
+		}
+		if d.Status == "closed" && d.WinnerID != nil {
+			winners[li.AuctionID] = *d.WinnerID
+		}
+	}
+	s.validateNotifications(ctx, step, acceptedByAuction, winners)
 	return nil
+}
+
+// notifyExpectation は1ユーザーぶんの通知期待値。
+type notifyExpectation struct {
+	MinOutbid   int64
+	WonAuctions []int64
+}
+
+// validateNotifications は通知の欠落を照合する。
+//   - 各入札ユーザーの outbid 通知数が台帳から導いた下限を下回らないこと
+//   - 落札者に該当オークションの won 通知が届いていること
+//   - 一度も入札していない新規ユーザーの通知が0件であること(他人宛の混入検出)
+//
+// ベンチの入札者はシードユーザーのみなので、user id から seed_user_%02d でログイン名を
+// 逆引きできる(Global Constraints 参照)。
+func (s *Scenario) validateNotifications(ctx context.Context, step *isucandar.BenchmarkStep,
+	acceptedByAuction map[int64][]AcceptedBid, winners map[int64]int64) {
+
+	want := map[int64]*notifyExpectation{}
+	for uid, n := range ExpectedOutbidCounts(acceptedByAuction) {
+		want[uid] = &notifyExpectation{MinOutbid: n}
+	}
+	for auctionID, winnerID := range winners {
+		e, ok := want[winnerID]
+		if !ok {
+			e = &notifyExpectation{}
+			want[winnerID] = e
+		}
+		e.WonAuctions = append(e.WonAuctions, auctionID)
+	}
+
+	for uid, e := range want {
+		if uid < 1 || uid > 20 {
+			// シードユーザー以外はログイン名を逆引きできないため検証対象外
+			continue
+		}
+		uc, err := NewClient(s.Target)
+		if err != nil {
+			step.AddError(failure.NewError(ErrApplication, err))
+			continue
+		}
+		if _, err := uc.Login(ctx, fmt.Sprintf("seed_user_%02d", uid), "password"); err != nil {
+			step.AddError(failure.NewError(ErrApplication, err))
+			continue
+		}
+		ns, err := uc.GetNotifications(ctx)
+		if err != nil {
+			step.AddError(failure.NewError(ErrApplication, err))
+			continue
+		}
+		if err := ValidateNotificationsOrdered(ns); err != nil {
+			step.AddError(failure.NewError(ErrCritical, err))
+		}
+		if got := CountByType(ns, "outbid"); got < e.MinOutbid {
+			step.AddError(failure.NewError(ErrCritical,
+				fmt.Errorf("user %d: outbid通知が %d件 (期待: %d件以上、欠落の疑い)", uid, got, e.MinOutbid)))
+		}
+		for _, auctionID := range e.WonAuctions {
+			if !HasWonNotification(ns, auctionID) {
+				step.AddError(failure.NewError(ErrCritical,
+					fmt.Errorf("user %d: auction %d を落札したのに won通知が無い", uid, auctionID)))
+			}
+		}
+	}
+
+	// 一度も入札していない新規ユーザーの通知は0件でなければならない。
+	// (user_id で絞らず全件返す実装を検出する)
+	fresh, err := NewClient(s.Target)
+	if err != nil {
+		step.AddError(failure.NewError(ErrApplication, err))
+		return
+	}
+	if _, err := fresh.Register(ctx, randomName("bench_notify_"), "benchpassword"); err != nil {
+		step.AddError(failure.NewError(ErrApplication, err))
+		return
+	}
+	ns, err := fresh.GetNotifications(ctx)
+	if err != nil {
+		step.AddError(failure.NewError(ErrApplication, err))
+		return
+	}
+	if len(ns) != 0 {
+		step.AddError(failure.NewError(ErrCritical,
+			fmt.Errorf("入札していない新規ユーザーに通知が %d件 (期待: 0件、他人宛の混入)", len(ns))))
+	}
 }
 
 func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) error {
@@ -118,6 +304,9 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 	if err != nil {
 		return err
 	}
+	// アプリが基準時刻を採ったのは応答を受け取る直前。ここを base とし、
+	// 初期化処理の所要時間ぶんのずれは endsAtTolerance が吸収する。
+	base := time.Now().UTC()
 	if lang == "" {
 		return fmt.Errorf("POST /initialize: lang が空")
 	}
@@ -127,7 +316,7 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 	if err != nil {
 		return err
 	}
-	if err := ValidateInitialAuctionList(list); err != nil {
+	if err := ValidateInitialAuctionList(list, base); err != nil {
 		return err
 	}
 

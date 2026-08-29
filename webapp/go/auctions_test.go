@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,6 +37,8 @@ type auctionDetailJSON struct {
 	auctionSummaryJSON
 	Description   string    `json:"description"`
 	StartingPrice int64     `json:"starting_price"`
+	WinnerID      *int64    `json:"winner_id"`
+	WinningPrice  *int64    `json:"winning_price"`
 	Bids          []bidJSON `json:"bids"`
 }
 
@@ -140,13 +144,17 @@ func TestGetAuctionsOrderedByEndsAt(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&list); err != nil {
 		t.Fatal(err)
 	}
-	// シードは id昇順 = ends_at昇順 になるよう階段配置されている
-	for i, a := range list {
-		if a.ID != int64(i+1) {
-			t.Fatalf("list[%d].ID = %d, want %d (ends_at ASC order)", i, a.ID, i+1)
+	// 初期化時にends_atが相対値へ書き換わり、ends_at昇順がid昇順と一致しないことが保証される。
+	// これはORDER BY ends_at ASCをORDER BY id ASCに誤って書き換えるバグを検出するため。
+	wantOrder := []int64{4, 2, 8, 6, 10, 1, 3, 5, 7, 9}
+	for i, want := range wantOrder {
+		if list[i].ID != want {
+			t.Errorf("list[%d].ID = %d, want %d (ends_at ASC の期待順序)", i, list[i].ID, want)
 		}
-		if i > 0 && a.EndsAt.Before(list[i-1].EndsAt) {
-			t.Fatalf("list[%d].EndsAt %v < list[%d].EndsAt %v", i, a.EndsAt, i-1, list[i-1].EndsAt)
+	}
+	for i := 1; i < len(list); i++ {
+		if list[i].EndsAt.Before(list[i-1].EndsAt) {
+			t.Fatalf("list[%d].EndsAt %v < list[%d].EndsAt %v (ends_at order violation)", i, list[i].EndsAt, i-1, list[i-1].EndsAt)
 		}
 	}
 }
@@ -186,5 +194,136 @@ func TestGetAuctionInvalidID(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", res.StatusCode)
+	}
+}
+
+func TestGetAuctionExposesWinner(t *testing.T) {
+	ts := newTestServer(t)
+	initApp(t, ts)
+
+	// auction 11 は seed で closed / winner_id=12 / winning_price=12000
+	var closed auctionDetailJSON
+	getJSON(t, ts.URL+"/auctions/11", &closed)
+	if closed.WinnerID == nil || *closed.WinnerID != 12 {
+		t.Errorf("auction 11 winner_id = %v, want 12", closed.WinnerID)
+	}
+	if closed.WinningPrice == nil || *closed.WinningPrice != 12000 {
+		t.Errorf("auction 11 winning_price = %v, want 12000", closed.WinningPrice)
+	}
+
+	// live のオークションは null
+	var live auctionDetailJSON
+	getJSON(t, ts.URL+"/auctions/1", &live)
+	if live.WinnerID != nil || live.WinningPrice != nil {
+		t.Errorf("auction 1 (live) winner = %v/%v, want null/null", live.WinnerID, live.WinningPrice)
+	}
+}
+
+// getJSON は GET して JSON をデコードするテストヘルパー。
+func getJSON(t *testing.T, url string, dest any) {
+	t.Helper()
+	res, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200", url, res.StatusCode)
+	}
+	if err := json.NewDecoder(res.Body).Decode(dest); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type auctionCreatedJSON struct {
+	ID            int64     `json:"id"`
+	Title         string    `json:"title"`
+	StartingPrice int64     `json:"starting_price"`
+	EndsAt        time.Time `json:"ends_at"`
+	Status        string    `json:"status"`
+}
+
+func TestPostAuction(t *testing.T) {
+	ts := newTestServer(t)
+	initApp(t, ts)
+	c := loginSeedUser(t, ts.URL, "seed_user_03")
+
+	before := time.Now().UTC()
+	res, err := c.Post(ts.URL+"/auctions", "application/json", strings.NewReader(
+		`{"title":"テスト椅子","description":"説明","category_id":1,"starting_price":5000,"duration_seconds":30}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", res.StatusCode)
+	}
+	var created auctionCreatedJSON
+	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == 0 {
+		t.Error("id が 0")
+	}
+	if created.Status != "live" {
+		t.Errorf("status = %q, want live", created.Status)
+	}
+	if created.StartingPrice != 5000 {
+		t.Errorf("starting_price = %d, want 5000", created.StartingPrice)
+	}
+	// ends_at は now + 30秒 のはず
+	lo, hi := before.Add(29*time.Second), time.Now().UTC().Add(31*time.Second)
+	if created.EndsAt.Before(lo) || created.EndsAt.After(hi) {
+		t.Errorf("ends_at = %v, want in [%v, %v]", created.EndsAt, lo, hi)
+	}
+
+	// 一覧に live として現れ、詳細も引ける
+	var d auctionDetailJSON
+	getJSON(t, fmt.Sprintf("%s/auctions/%d", ts.URL, created.ID), &d)
+	if d.Status != "live" || d.CurrentPrice != 5000 || len(d.Bids) != 0 {
+		t.Errorf("詳細が不正: status=%q current_price=%d bids=%d", d.Status, d.CurrentPrice, len(d.Bids))
+	}
+	if d.Seller.Name != "seed_user_03" {
+		t.Errorf("seller = %q, want seed_user_03", d.Seller.Name)
+	}
+}
+
+func TestPostAuctionValidation(t *testing.T) {
+	ts := newTestServer(t)
+	initApp(t, ts)
+	c := loginSeedUser(t, ts.URL, "seed_user_03")
+
+	for _, tt := range []struct {
+		name string
+		body string
+		want int
+	}{
+		{"title が空", `{"title":"","description":"d","category_id":1,"starting_price":5000,"duration_seconds":30}`, http.StatusBadRequest},
+		{"starting_price が0", `{"title":"t","description":"d","category_id":1,"starting_price":0,"duration_seconds":30}`, http.StatusBadRequest},
+		{"duration が短すぎる", `{"title":"t","description":"d","category_id":1,"starting_price":5000,"duration_seconds":5}`, http.StatusBadRequest},
+		{"duration が長すぎる", `{"title":"t","description":"d","category_id":1,"starting_price":5000,"duration_seconds":301}`, http.StatusBadRequest},
+		{"存在しないカテゴリ", `{"title":"t","description":"d","category_id":999,"starting_price":5000,"duration_seconds":30}`, http.StatusBadRequest},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := c.Post(ts.URL+"/auctions", "application/json", strings.NewReader(tt.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			res.Body.Close()
+			if res.StatusCode != tt.want {
+				t.Errorf("status = %d, want %d", res.StatusCode, tt.want)
+			}
+		})
+	}
+
+	// 未ログインは 401
+	res, err := http.Post(ts.URL+"/auctions", "application/json", strings.NewReader(
+		`{"title":"t","description":"d","category_id":1,"starting_price":5000,"duration_seconds":30}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("未ログイン status = %d, want 401", res.StatusCode)
 	}
 }
