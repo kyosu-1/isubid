@@ -87,20 +87,35 @@ const generatedEpochLiteral = "2100-01-01 00:00:00"
 // bids に auction_id のインデックスは無い(意図的、他クエリと同じ理由でそのまま)ため、
 // このUPDATEはbids全体を1回フルスキャンする。対象になるのはlive/upcoming分の生成bidのみ
 // (small規模で約1,400件、full規模でも6,000件未満)であり、フルスキャン1回のコストは許容する。
+//
+// 実行順序は bids UPDATE → auctions UPDATE の順を厳守すること(自然に見える
+// auctions→bidsの順に「整地」してはいけない)。auctions UPDATEが先にcommitすると、
+// 最も早い生成live auctionは base+15秒(最小のlive offset)で確定し、その瞬間から
+// runAuctionCloser(context.Background()で常時稼働、毎秒 status='live' AND
+// ends_at<=NOW(6) を閉じる)がそれを拾える状態になる。bids UPDATEはbids全体の
+// フルスキャンで、small規模で30,000行・full規模で300,000行を読むため、この
+// ウィンドウの間に完走しない可能性がある。closerが先にauctionをclosedへ倒すと、
+// bids UPDATEのWHERE句(a.status IN ('live','upcoming'))がそのauctionのbidを
+// 静かにスキップし、closed化されたauctionのbidだけ2100年のcreated_atのまま
+// 取り残される——Defect Cが防ごうとしていた状態に、今度は逆方向から到達してしまう。
+// bids UPDATEを先に実行すれば、その実行中はauctionsがまだ2100年帯のends_atの
+// ままなのでcloserはどのauctionにもマッチしようがなく、レースそのものが成立しない。
+// 両UPDATEとも同じbase・同じgeneratedEpochLiteralを使うため計算結果は順序に依らず
+// 同一だが、レースの有無は順序で決まる。
 func applyGeneratedSchedule(ctx context.Context, db *sqlx.DB, base time.Time) error {
 	if _, err := db.ExecContext(ctx,
+		"UPDATE bids b JOIN auctions a ON a.id = b.auction_id SET "+
+			"b.created_at = DATE_ADD(?, INTERVAL TIMESTAMPDIFF(SECOND, ?, b.created_at) SECOND) "+
+			"WHERE a.id > ? AND a.status IN ('live','upcoming')",
+		base, generatedEpochLiteral, seedMaxAuctionID); err != nil {
+		return err
+	}
+	_, err := db.ExecContext(ctx,
 		"UPDATE auctions SET "+
 			"starts_at = DATE_ADD(?, INTERVAL TIMESTAMPDIFF(SECOND, ?, starts_at) SECOND), "+
 			"ends_at   = DATE_ADD(?, INTERVAL TIMESTAMPDIFF(SECOND, ?, ends_at)   SECOND) "+
 			"WHERE id > ? AND status IN ('live','upcoming')",
-		base, generatedEpochLiteral, base, generatedEpochLiteral, seedMaxAuctionID); err != nil {
-		return err
-	}
-	_, err := db.ExecContext(ctx,
-		"UPDATE bids b JOIN auctions a ON a.id = b.auction_id SET "+
-			"b.created_at = DATE_ADD(?, INTERVAL TIMESTAMPDIFF(SECOND, ?, b.created_at) SECOND) "+
-			"WHERE a.id > ? AND a.status IN ('live','upcoming')",
-		base, generatedEpochLiteral, seedMaxAuctionID)
+		base, generatedEpochLiteral, base, generatedEpochLiteral, seedMaxAuctionID)
 	return err
 }
 

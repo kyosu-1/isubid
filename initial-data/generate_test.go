@@ -208,6 +208,63 @@ func TestGeneratedClosedAuctionsAreInThePast(t *testing.T) {
 	}
 }
 
+// generatedEpoch は必ず未来日付でなければならない。過去日付に「整地」すると、
+// POST /initialize がダンプ投入から applyGeneratedSchedule 実行までの一瞬、
+// 生成liveオークションの ends_at がエポック起点のオフセットそのままの値になり、
+// runAuctionCloser(毎秒 status='live' AND ends_at<=NOW(6) を閉じるバッチ)がそれを
+// 期限切れとみなして拾ってしまう。すると won 通知が auto-increment id で挿入され、
+// notifications の採番カウンタが1を超えた後に 94_notifications.sql が id=1 から
+// 明示挿入する際に Duplicate entry で衝突する(確率的な初期化失敗、60秒走行7回中
+// 3回で発生した実測あり)。
+func TestGeneratedEpochIsInTheFuture(t *testing.T) {
+	if !generatedEpoch.After(time.Now()) {
+		t.Fatalf("generatedEpoch = %v, want after now(過去日付に戻すとPOST /initializeでrunAuctionCloserとの競合が確率的に再発する)",
+			generatedEpoch)
+	}
+}
+
+// webapp/go/initialize.go の applyGeneratedSchedule は、生成bidのcreated_atが
+// auctionと同じ TIMESTAMPDIFF(SECOND, generatedEpochLiteral, ...) でシフトされる
+// ことに依存しており、それはさらに「生成liveオークションのどのbidのcreated_atも
+// generatedEpochを超えない」という前提があって初めて正しく機能する。もしこの前提が
+// 崩れてbidのcreated_atがgeneratedEpochを超えると、TIMESTAMPDIFFの符号が反転し、
+// 他のbidと不整合なシフト量になって単調性検査(reconcileAuction経由の
+// ValidateBidsInvariant)が再び壊れる。生成時点(現在は1 liveあたり最大42件)で
+// bidsをauction数に対して増やすと(Scalesの Bids を LiveAuctions に対して相対的に
+// 引き上げると)この余白は縮む。
+func TestGeneratedLiveAuctionBidsEndBeforeEpoch(t *testing.T) {
+	cfg := Scales["small"]
+	cfg.Seed = DefaultSeed
+	ds := Generate(cfg)
+
+	liveIDs := map[int64]bool{}
+	for _, a := range ds.Auctions {
+		if a.Status == "live" {
+			liveIDs[a.ID] = true
+		}
+	}
+
+	maxCreated := map[int64]time.Time{}
+	for _, b := range ds.Bids {
+		if !liveIDs[b.AuctionID] {
+			continue
+		}
+		if cur, ok := maxCreated[b.AuctionID]; !ok || b.CreatedAt.After(cur) {
+			maxCreated[b.AuctionID] = b.CreatedAt
+		}
+	}
+	if len(maxCreated) == 0 {
+		t.Fatal("生成liveオークションにbidが1件も無い(このテストが検証対象を持てていない)")
+	}
+
+	for auctionID, maxT := range maxCreated {
+		if !maxT.Before(generatedEpoch) {
+			t.Fatalf("live auction %d の最終bid created_at = %v, want before generatedEpoch(%v)",
+				auctionID, maxT, generatedEpoch)
+		}
+	}
+}
+
 // ベンチの ValidateBidsInvariant / ValidateFeedPage は
 // 「各オークション内で id 昇順に amount が厳密単調増加」を検証する。
 // 生成データがこれを破ると Prepare とウォッチャーが即 critical を出す。
