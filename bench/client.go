@@ -208,3 +208,39 @@ func (c *Client) GetBidFeed(ctx context.Context, auctionID, since int64) ([]Bid,
 	}
 	return body.Bids, nil
 }
+
+// PostAuction は出品する。
+func (c *Client) PostAuction(ctx context.Context, title, description string,
+	categoryID, startingPrice, durationSeconds int64) (*AuctionCreated, error) {
+	code, b, err := c.doJSON(ctx, http.MethodPost, "/auctions", map[string]any{
+		"title": title, "description": description, "category_id": categoryID,
+		"starting_price": startingPrice, "duration_seconds": durationSeconds,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if code != http.StatusCreated {
+		return nil, fmt.Errorf("POST /auctions: status %d (期待: 201, body: %s)", code, b)
+	}
+	var a AuctionCreated
+	if err := json.Unmarshal(b, &a); err != nil {
+		return nil, fmt.Errorf("POST /auctions: 不正なJSON: %w", err)
+	}
+	return &a, nil
+}
+
+// GetStatsMe は出品者の売上サマリを取得する。
+func (c *Client) GetStatsMe(ctx context.Context) (*Stats, error) {
+	code, b, err := c.doJSON(ctx, http.MethodGet, "/stats/me", nil)
+	if err != nil {
+		return nil, err
+	}
+	if code != http.StatusOK {
+		return nil, fmt.Errorf("GET /stats/me: status %d (body: %s)", code, b)
+	}
+	var s Stats
+	if err := json.Unmarshal(b, &s); err != nil {
+		return nil, fmt.Errorf("GET /stats/me: 不正なJSON: %w", err)
+	}
+	return &s, nil
+}

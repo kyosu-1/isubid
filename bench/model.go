@@ -43,6 +43,21 @@ type BidCreated struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type AuctionCreated struct {
+	ID            int64     `json:"id"`
+	Title         string    `json:"title"`
+	StartingPrice int64     `json:"starting_price"`
+	EndsAt        time.Time `json:"ends_at"`
+	Status        string    `json:"status"`
+}
+
+type Stats struct {
+	ListedCount int64 `json:"listed_count"`
+	SoldCount   int64 `json:"sold_count"`
+	TotalSales  int64 `json:"total_sales"`
+	LiveCount   int64 `json:"live_count"`
+}
+
 type Notification struct {
 	ID        int64     `json:"id"`
 	Type      string    `json:"type"`

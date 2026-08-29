@@ -12,6 +12,7 @@ import (
 
 	"github.com/isucon/isucandar"
 	"github.com/isucon/isucandar/failure"
+	"github.com/isucon/isucandar/pubsub"
 	"github.com/isucon/isucandar/worker"
 )
 
@@ -22,7 +23,20 @@ type Scenario struct {
 	Bidders     int
 	Watchers    int
 	Notifiers   int
+	Sellers     int
+	Listings    *pubsub.PubSub
+	Board       *listingBoard
 	Ledger      *Ledger
+}
+
+// newListingPubSub は出品配信用の PubSub を作る。
+// pubsub.Publish は購読チャネルが満杯だとブロックし、その状態で購読側が
+// ctx キャンセルで閉じようとすると相互にロック待ちになりうる。
+// 購読ハンドラは即座に返る実装だが、念のため十分な容量を確保しておく。
+func newListingPubSub() *pubsub.PubSub {
+	ps := pubsub.NewPubSub()
+	ps.Capacity = 1000
+	return ps
 }
 
 func randomName(prefix string) string {
@@ -38,6 +52,14 @@ func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) erro
 	if s.PrepareOnly {
 		return nil
 	}
+	// 購読は worker 起動前に張る。ハンドラはスライス追記だけで即座に返るため
+	// Publish 側がブロックしない。Capacity にも十分な余裕を持たせておく。
+	s.Board = &listingBoard{}
+	s.Listings.Subscribe(ctx, func(v interface{}) {
+		if id, ok := v.(int64); ok {
+			s.Board.add(id)
+		}
+	})
 	bidder, err := worker.NewWorker(func(ctx context.Context, _ int) {
 		s.bidderIteration(ctx, step)
 	}, worker.WithInfinityLoop(), worker.WithMaxParallelism(int32(s.Bidders)))
@@ -56,11 +78,18 @@ func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) erro
 	if err != nil {
 		return err
 	}
+	seller, err := worker.NewWorker(func(ctx context.Context, _ int) {
+		s.sellerIteration(ctx, step)
+	}, worker.WithInfinityLoop(), worker.WithMaxParallelism(int32(s.Sellers)))
+	if err != nil {
+		return err
+	}
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() { defer wg.Done(); bidder.Process(ctx) }()
 	go func() { defer wg.Done(); watcher.Process(ctx) }()
 	go func() { defer wg.Done(); notifier.Process(ctx) }()
+	go func() { defer wg.Done(); seller.Process(ctx) }()
 	wg.Wait()
 	return nil
 }
@@ -86,15 +115,26 @@ func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep
 
 	acceptedByAuction := s.Ledger.ByAuction()
 	pendingByAuction := s.Ledger.PendingByAuction()
+	listings := s.Ledger.Listings()
 
+	// ベンチが知っているオークション = 初期データ ∪ ベンチが出品したもの
+	known := map[int64]bool{}
+	for id := range expectedInitialAuctions {
+		known[id] = true
+	}
+	listingByID := map[int64]Listing{}
+	for _, li := range listings {
+		known[li.AuctionID] = true
+		listingByID[li.AuctionID] = li
+	}
 	for auctionID := range acceptedByAuction {
-		if _, ok := expectedInitialAuctions[auctionID]; !ok {
+		if !known[auctionID] {
 			step.AddError(failure.NewError(ErrCritical,
 				fmt.Errorf("想定外のauctionに入札が受理された (auction %d)", auctionID)))
 		}
 	}
 	for auctionID := range pendingByAuction {
-		if _, ok := expectedInitialAuctions[auctionID]; !ok {
+		if !known[auctionID] {
 			step.AddError(failure.NewError(ErrCritical,
 				fmt.Errorf("想定外のauctionに未確定入札(pending)が存在 (auction %d)", auctionID)))
 		}
@@ -120,6 +160,26 @@ func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep
 		}
 		if d.Status == "closed" && d.WinnerID != nil {
 			winners[auctionID] = *d.WinnerID
+		}
+	}
+	for _, li := range listings {
+		d, err := c.GetAuctionRetry(ctx, li.AuctionID, 3, 100*time.Millisecond)
+		if err != nil {
+			step.AddError(failure.NewError(ErrCritical, fmt.Errorf("auction %d: %w", li.AuctionID, err)))
+			continue
+		}
+		for _, e := range reconcileAuction(li.AuctionID, d, 0, li.StartingPrice,
+			acceptedByAuction[li.AuctionID], pendingByAuction[li.AuctionID]) {
+			step.AddError(failure.NewError(ErrCritical, e))
+		}
+		for _, e := range reconcileClosedAuction(li.AuctionID, d) {
+			step.AddError(failure.NewError(ErrCritical, e))
+		}
+		if err := ValidateAuctionClosedIfDue(d, time.Now().UTC(), closeGrace); err != nil {
+			step.AddError(failure.NewError(ErrCritical, err))
+		}
+		if d.Status == "closed" && d.WinnerID != nil {
+			winners[li.AuctionID] = *d.WinnerID
 		}
 	}
 	s.validateNotifications(ctx, step, acceptedByAuction, winners)

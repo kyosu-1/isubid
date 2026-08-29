@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/isucon/isucandar"
@@ -99,11 +100,16 @@ func (s *Scenario) bidderIteration(ctx context.Context, step *isucandar.Benchmar
 		addErr(ctx, step, ErrCritical, fmt.Errorf("GET /auctions: 開催中オークションが0件"))
 		return
 	}
-	target := list[rand.Intn(len(list))]
+	targetID := list[rand.Intn(len(list))].ID
+	// 新規出品には pubsub 経由で人が集まる(終了間際に競りが起きる挙動の再現)。
+	// 既に closed になっていた場合は詳細取得後の status チェックで抜ける。
+	if id, ok := s.Board.random(); ok && rand.Intn(2) == 0 {
+		targetID = id
+	}
 
 	// 競り負け(400 too-low)たら現在価格を取り直して上乗せ。最大5回。
 	for attempt := 0; attempt < 5; attempt++ {
-		d, err := c.GetAuction(ctx, target.ID)
+		d, err := c.GetAuction(ctx, targetID)
 		if err != nil {
 			addErr(ctx, step, ErrApplication, err)
 			return
@@ -125,8 +131,8 @@ func (s *Scenario) bidderIteration(ctx context.Context, step *isucandar.Benchmar
 		// 起きても、サーバー側では既にコミットされている可能性がある(in-flight commit)。
 		// 201を受け取れなかった場合にAcceptedBidを作れないだけで「入札されなかった」とは
 		// 断定できないため、pendingとして残しValidationで許容判定させる。
-		intentID := s.Ledger.Intent(target.ID, user.ID, amount)
-		bid, code, err := c.PostBid(ctx, target.ID, amount)
+		intentID := s.Ledger.Intent(targetID, user.ID, amount)
+		bid, code, err := c.PostBid(ctx, targetID, amount)
 		if err != nil {
 			// 結果不明(転送エラー/5xx/タイムアウト): pendingのまま残す。
 			addErr(ctx, step, ErrApplication, err)
@@ -136,15 +142,15 @@ func (s *Scenario) bidderIteration(ctx context.Context, step *isucandar.Benchmar
 		case 201:
 			// 201は確定的なコミット。台帳へ昇格させる(応答内容が期待とズレていても
 			// 実際にコミットされた値で記録し、その上で内容不一致を別途criticalにする)。
-			s.Ledger.Confirm(intentID, AcceptedBid{BidID: bid.ID, AuctionID: target.ID, UserID: bid.UserID, Amount: bid.Amount})
+			s.Ledger.Confirm(intentID, AcceptedBid{BidID: bid.ID, AuctionID: targetID, UserID: bid.UserID, Amount: bid.Amount})
 			if bid.UserID != user.ID || bid.Amount != amount {
 				addErr(ctx, step, ErrCritical,
 					fmt.Errorf("POST /auctions/%d/bids: 応答内容が不一致 (got user=%d amount=%d, want user=%d amount=%d)",
-						target.ID, bid.UserID, bid.Amount, user.ID, amount))
+						targetID, bid.UserID, bid.Amount, user.ID, amount))
 				return
 			}
 			step.AddScore(ScorePOSTBid)
-			s.awaitFeedReflection(ctx, step, c, target.ID, sinceID, bid.ID)
+			s.awaitFeedReflection(ctx, step, c, targetID, sinceID, bid.ID)
 			return
 		case 400:
 			// 競り負け: 確定的に未コミット。取り直して再入札。
@@ -154,7 +160,7 @@ func (s *Scenario) bidderIteration(ctx context.Context, step *isucandar.Benchmar
 			// その他の4xx(401/403/404等)も確定的に未コミットと判断してpendingを解消する。
 			s.Ledger.Reject(intentID)
 			addErr(ctx, step, ErrApplication,
-				fmt.Errorf("POST /auctions/%d/bids: 予期しない status %d", target.ID, code))
+				fmt.Errorf("POST /auctions/%d/bids: 予期しない status %d", targetID, code))
 			return
 		}
 	}
@@ -240,5 +246,83 @@ func (s *Scenario) notifierIteration(ctx context.Context, step *isucandar.Benchm
 	step.AddScore(ScoreGETNotifications)
 	if err := ValidateNotificationsOrdered(ns); err != nil {
 		addErr(ctx, step, ErrCritical, err)
+	}
+}
+
+// listingBoard は pubsub 経由で配信された新規出品IDを保持する。
+//
+// isucandar の pubsub.Publish は購読チャネルが満杯だとブロックするため、
+// 購読ハンドラは必ず即座に返らなければならない(ここではスライスへの追記のみ)。
+type listingBoard struct {
+	mu  sync.Mutex
+	ids []int64
+}
+
+func (b *listingBoard) add(id int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.ids = append(b.ids, id)
+}
+
+// random は配信済みの出品からランダムに1件返す。1件も無ければ ok=false。
+func (b *listingBoard) random() (int64, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.ids) == 0 {
+		return 0, false
+	}
+	return b.ids[rand.Intn(len(b.ids))], true
+}
+
+var sellerTitles = []string{
+	"ラピッドチェア", "オークリーフ・スツール", "ミニマルワークシート",
+	"ベルベット・オットマン", "スカンジ・ダイニング",
+}
+
+// sellerIteration は「ログイン→出品→売上確認」の1セッション。
+// 出品したオークションは pubsub で入札者シナリオへ配信され、入札が集まる。
+// duration は20〜40秒なので、走行中に closed へ遷移して落札 Validation の対象になる。
+func (s *Scenario) sellerIteration(ctx context.Context, step *isucandar.BenchmarkStep) {
+	c, err := NewClient(s.Target)
+	if err != nil {
+		addErr(ctx, step, ErrApplication, err)
+		return
+	}
+	user, err := c.Login(ctx, seedUserName(), "password")
+	if err != nil {
+		addErr(ctx, step, ErrApplication, err)
+		return
+	}
+	title := sellerTitles[rand.Intn(len(sellerTitles))]
+	startingPrice := int64(1000 + rand.Intn(9)*500)
+	duration := int64(20 + rand.Intn(21)) // 20〜40秒
+	created, err := c.PostAuction(ctx, title, "ベンチが出品した椅子",
+		int64(1+rand.Intn(3)), startingPrice, duration)
+	if err != nil {
+		addErr(ctx, step, ErrApplication, err)
+		return
+	}
+	step.AddScore(ScorePOSTAuction)
+	if created.Status != "live" || created.StartingPrice != startingPrice {
+		addErr(ctx, step, ErrCritical,
+			fmt.Errorf("POST /auctions: 応答が不一致 (status=%q starting_price=%d, 期待: live/%d)",
+				created.Status, created.StartingPrice, startingPrice))
+		return
+	}
+	s.Ledger.RecordListing(Listing{
+		AuctionID: created.ID, SellerID: user.ID, StartingPrice: created.StartingPrice,
+	})
+	s.Listings.Publish(created.ID)
+
+	stats, err := c.GetStatsMe(ctx)
+	if err != nil {
+		addErr(ctx, step, ErrApplication, err)
+		return
+	}
+	// 出品直後なので、出品数も live 数も最低1件はあるはず。
+	if stats.ListedCount < 1 || stats.LiveCount < 1 {
+		addErr(ctx, step, ErrCritical,
+			fmt.Errorf("GET /stats/me: 出品直後なのに listed_count=%d live_count=%d",
+				stats.ListedCount, stats.LiveCount))
 	}
 }

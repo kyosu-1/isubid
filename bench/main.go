@@ -19,6 +19,7 @@ func main() {
 	bidders := flag.Int("bidders", 8, "入札者worker数")
 	watchers := flag.Int("watchers", 4, "ウォッチャーworker数")
 	notifiers := flag.Int("notifiers", 2, "通知確認worker数")
+	sellers := flag.Int("sellers", 2, "出品者worker数")
 	flag.Parse()
 
 	s := &Scenario{
@@ -27,6 +28,8 @@ func main() {
 		Bidders:     *bidders,
 		Watchers:    *watchers,
 		Notifiers:   *notifiers,
+		Sellers:     *sellers,
+		Listings:    newListingPubSub(),
 		Ledger:      NewLedger(),
 	}
 
@@ -85,6 +88,7 @@ func main() {
 		{ScorePOSTBid, "POST /auctions/:id/bids"},
 		{ScoreGETFeed, "GET /auctions/:id/bids"},
 		{ScoreGETNotifications, "GET /notifications"},
+		{ScorePOSTAuction, "POST /auctions"},
 	} {
 		count := breakdown[st.tag]
 		pt := count * scoreTable[st.tag]

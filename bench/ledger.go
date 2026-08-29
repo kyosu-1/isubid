@@ -25,10 +25,18 @@ type PendingBid struct {
 	Amount    int64
 }
 
+// Listing はベンチが出品したオークションの記録。Validation の検証対象に含めるために使う。
+type Listing struct {
+	AuctionID     int64
+	SellerID      int64
+	StartingPrice int64
+}
+
 type Ledger struct {
 	mu       sync.Mutex
 	accepted map[int64][]AcceptedBid // auctionID -> bids
 	pending  map[int64]PendingBid    // intentID -> pending bid
+	listings []Listing
 	nextID   int64
 }
 
@@ -108,5 +116,20 @@ func (l *Ledger) PendingByAuction() map[int64][]PendingBid {
 	for _, p := range l.pending {
 		out[p.AuctionID] = append(out[p.AuctionID], p)
 	}
+	return out
+}
+
+func (l *Ledger) RecordListing(li Listing) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.listings = append(l.listings, li)
+}
+
+// Listings は出品記録のコピーを返す。
+func (l *Ledger) Listings() []Listing {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]Listing, len(l.listings))
+	copy(out, l.listings)
 	return out
 }
