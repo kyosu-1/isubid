@@ -209,3 +209,29 @@ func ValidateAuctionClosedIfDue(d *AuctionDetail, now time.Time, grace time.Dura
 	}
 	return nil
 }
+
+// ValidateFeedPage はフィード1ページ分の不変条件を検証する。
+//   (1) すべての id が since より大きい
+//   (2) id 昇順
+//   (3) 金額が厳密単調増加
+// (3)は詳細APIの ValidateBidAmountsMonotonic と同じ根拠(受理順で単調増加)を
+// 昇順の並びに対して見たもの。同額や逆転は FOR UPDATE 不在の兆候である。
+func ValidateFeedPage(bids []Bid, since int64) error {
+	for i, b := range bids {
+		if b.ID <= since {
+			return fmt.Errorf("フィードに since(%d) 以下の入札が含まれる (index %d: id=%d)", since, i, b.ID)
+		}
+		if i == 0 {
+			continue
+		}
+		prev := bids[i-1]
+		if b.ID <= prev.ID {
+			return fmt.Errorf("フィードが id 昇順でない (index %d: id=%d の前が id=%d)", i, b.ID, prev.ID)
+		}
+		if b.Amount <= prev.Amount {
+			return fmt.Errorf("フィードの金額が単調増加でない (id=%d(amount=%d) の次に id=%d(amount=%d))",
+				prev.ID, prev.Amount, b.ID, b.Amount)
+		}
+	}
+	return nil
+}

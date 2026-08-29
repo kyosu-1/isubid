@@ -472,6 +472,44 @@ func TestValidateBidReflectedWrongContent(t *testing.T) {
 	}
 }
 
+// フィードは id ASC で、since より大きい id のみを含み、金額が厳密単調増加になる。
+// (受理順 = id 昇順であり、入札は現在最高額を必ず上回るため)
+func TestValidateFeedPage(t *testing.T) {
+	t0 := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	ok := []Bid{
+		{ID: 11, User: User{ID: 2}, Amount: 1000, CreatedAt: t0},
+		{ID: 12, User: User{ID: 3}, Amount: 1200, CreatedAt: t0.Add(time.Second)},
+		{ID: 13, User: User{ID: 4}, Amount: 1500, CreatedAt: t0.Add(2 * time.Second)},
+	}
+	if err := ValidateFeedPage(ok, 10); err != nil {
+		t.Fatalf("正しいフィードが拒否された: %v", err)
+	}
+	if err := ValidateFeedPage(nil, 10); err != nil {
+		t.Errorf("空フィードが拒否された: %v", err)
+	}
+
+	// since 以下の id が混ざっている
+	withOld := append([]Bid{{ID: 9, User: User{ID: 2}, Amount: 900, CreatedAt: t0}}, ok...)
+	if err := ValidateFeedPage(withOld, 10); err == nil {
+		t.Error("since 以下の id が検出されなかった")
+	}
+
+	// id が降順
+	desc := []Bid{ok[2], ok[1], ok[0]}
+	if err := ValidateFeedPage(desc, 10); err == nil {
+		t.Error("id 降順が検出されなかった")
+	}
+
+	// 金額が単調増加でない(同額) = FOR UPDATE 不在の兆候
+	sameAmount := []Bid{
+		{ID: 11, User: User{ID: 2}, Amount: 1000, CreatedAt: t0},
+		{ID: 12, User: User{ID: 3}, Amount: 1000, CreatedAt: t0.Add(time.Second)},
+	}
+	if err := ValidateFeedPage(sameAmount, 10); err == nil {
+		t.Error("同額(単調増加違反)が検出されなかった")
+	}
+}
+
 // ends_at は「initialize 応答受信時刻 + オフセット」± 許容幅で照合する。
 func TestValidateInitialAuctionListRelativeEndsAt(t *testing.T) {
 	base := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
