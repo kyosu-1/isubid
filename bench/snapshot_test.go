@@ -51,8 +51,14 @@ func TestLoadSnapshot(t *testing.T) {
 	if a.WinnerID == nil || *a.WinnerID != 22 {
 		t.Errorf("auction 13 winner_id = %v, want 22", a.WinnerID)
 	}
+	if a.WinningPrice == nil || *a.WinningPrice != 1500 {
+		t.Errorf("auction 13 winning_price = %v, want 1500", a.WinningPrice)
+	}
 	if b, _ := snap.ByID(100); b.WinnerID != nil {
 		t.Errorf("auction 100 winner_id = %v, want nil", b.WinnerID)
+	}
+	if b, _ := snap.ByID(100); b.WinningPrice != nil {
+		t.Errorf("auction 100 winning_price = %v, want nil", b.WinningPrice)
 	}
 	if _, ok := snap.ByID(99999); ok {
 		t.Error("存在しない id が引けてしまう")
