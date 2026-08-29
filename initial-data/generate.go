@@ -34,11 +34,20 @@ type Auction struct {
 	WinningPrice  *int64
 }
 
+type Bid struct {
+	ID        int64
+	AuctionID int64
+	UserID    int64
+	Amount    int64
+	CreatedAt time.Time
+}
+
 // Dataset は1回の生成で得られる全データ。
 type Dataset struct {
 	Config   Config
 	Users    []User
 	Auctions []Auction
+	Bids     []Bid
 }
 
 // chairNames / chairDescs は生成タイトルの素材。
@@ -67,6 +76,8 @@ func Generate(cfg Config) *Dataset {
 	ds := &Dataset{Config: cfg}
 	ds.Users = generateUsers(cfg)
 	ds.Auctions = generateAuctions(cfg, rng, ds.Users)
+	ds.Bids = generateBids(cfg, rng, ds.Auctions, ds.Users)
+	backfillWinners(ds.Auctions, ds.Bids)
 	return ds
 }
 
@@ -144,4 +155,93 @@ func generateAuctions(cfg Config, rng *rand.Rand, users []User) []Auction {
 		auctions = append(auctions, a)
 	}
 	return auctions
+}
+
+// generateBids は closed / live オークションへ入札を分配する。
+//
+// 各オークション内では id 昇順に amount が厳密単調増加し、created_at も同順になる。
+// これはベンチの ValidateBidsInvariant / ValidateFeedPage が検証する不変条件であり、
+// 破ると Prepare とウォッチャーが即 critical を出す。
+// 連続する入札は必ず別ユーザーにする(現実的であり、通知ファンアウトの重みも生む)。
+func generateBids(cfg Config, rng *rand.Rand, auctions []Auction, users []User) []Bid {
+	// 入札対象は closed と live のみ
+	targets := make([]int, 0, len(auctions))
+	for i, a := range auctions {
+		if a.Status == "closed" || a.Status == "live" {
+			targets = append(targets, i)
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+
+	// 各対象への入札数を決める。均等割りしたうえで剰余を先頭から配ることで、
+	// 合計が必ず cfg.Bids に一致する。
+	counts := make([]int, len(targets))
+	base := cfg.Bids / len(targets)
+	rest := cfg.Bids % len(targets)
+	for i := range counts {
+		counts[i] = base
+		if i < rest {
+			counts[i]++
+		}
+	}
+	// 偏りを作る: 隣接するペアで入札数をやり取りする(合計は保存される)
+	for i := 0; i+1 < len(counts); i += 2 {
+		move := rng.Intn(counts[i]/2 + 1)
+		counts[i] -= move
+		counts[i+1] += move
+	}
+
+	bids := make([]Bid, 0, cfg.Bids)
+	nextID := int64(SeedMaxBidID + 1)
+	for k, idx := range targets {
+		a := &auctions[idx]
+		amount := a.StartingPrice
+		created := a.StartsAt
+		var prevUser int64
+		for j := 0; j < counts[k]; j++ {
+			amount += int64(100 + rng.Intn(400))
+			created = created.Add(time.Duration(1+rng.Intn(60)) * time.Second)
+
+			u := users[rng.Intn(len(users))].ID
+			for u == prevUser {
+				u = users[rng.Intn(len(users))].ID
+			}
+			prevUser = u
+
+			bids = append(bids, Bid{
+				ID: nextID, AuctionID: a.ID, UserID: u,
+				Amount: amount, CreatedAt: created,
+			})
+			nextID++
+		}
+	}
+	return bids
+}
+
+// backfillWinners は closed オークションの winner_id / winning_price を、
+// そのオークションの最大 amount の入札から埋める。
+// ベンチの reconcileClosedAuction が winner = argmax(bids) を厳密に検証するため、
+// 生成データもこの不変条件を満たす必要がある。
+func backfillWinners(auctions []Auction, bids []Bid) {
+	top := map[int64]Bid{}
+	for _, b := range bids {
+		if cur, ok := top[b.AuctionID]; !ok || b.Amount > cur.Amount {
+			top[b.AuctionID] = b
+		}
+	}
+	for i := range auctions {
+		a := &auctions[i]
+		if a.Status != "closed" {
+			continue
+		}
+		t, ok := top[a.ID]
+		if !ok {
+			continue // 入札0件のまま closed
+		}
+		winner, price := t.UserID, t.Amount
+		a.WinnerID = &winner
+		a.WinningPrice = &price
+	}
 }

@@ -178,3 +178,97 @@ func TestGeneratedClosedAuctionsAreInThePast(t *testing.T) {
 		}
 	}
 }
+
+// ベンチの ValidateBidsInvariant / ValidateFeedPage は
+// 「各オークション内で id 昇順に amount が厳密単調増加」を検証する。
+// 生成データがこれを破ると Prepare とウォッチャーが即 critical を出す。
+func TestGeneratedBidsAreMonotonicPerAuction(t *testing.T) {
+	cfg := Scales["small"]
+	cfg.Seed = DefaultSeed
+	ds := Generate(cfg)
+
+	byAuction := map[int64][]Bid{}
+	for _, b := range ds.Bids {
+		byAuction[b.AuctionID] = append(byAuction[b.AuctionID], b)
+	}
+	for auctionID, bids := range byAuction {
+		for i := 1; i < len(bids); i++ {
+			prev, cur := bids[i-1], bids[i]
+			if cur.ID <= prev.ID {
+				t.Fatalf("auction %d: bid id が昇順でない (%d の次が %d)", auctionID, prev.ID, cur.ID)
+			}
+			if cur.Amount <= prev.Amount {
+				t.Fatalf("auction %d: amount が厳密単調増加でない (id=%d amount=%d の次が id=%d amount=%d)",
+					auctionID, prev.ID, prev.Amount, cur.ID, cur.Amount)
+			}
+			if !cur.CreatedAt.After(prev.CreatedAt) {
+				t.Fatalf("auction %d: created_at が id と同順でない (id=%d %v の次が id=%d %v)",
+					auctionID, prev.ID, prev.CreatedAt, cur.ID, cur.CreatedAt)
+			}
+			if cur.UserID == prev.UserID {
+				t.Fatalf("auction %d: 同一ユーザーが連続して入札している (user=%d)", auctionID, cur.UserID)
+			}
+		}
+	}
+}
+
+// ベンチの reconcileClosedAuction は winner = argmax(bids) を厳密に検証する。
+func TestGeneratedClosedAuctionWinnersMatchMaxBid(t *testing.T) {
+	cfg := Scales["small"]
+	cfg.Seed = DefaultSeed
+	ds := Generate(cfg)
+
+	maxBid := map[int64]Bid{}
+	for _, b := range ds.Bids {
+		if cur, ok := maxBid[b.AuctionID]; !ok || b.Amount > cur.Amount {
+			maxBid[b.AuctionID] = b
+		}
+	}
+	for _, a := range ds.Auctions {
+		if a.Status != "closed" {
+			if a.WinnerID != nil || a.WinningPrice != nil {
+				t.Fatalf("auction %d (%s) に落札者が設定されている", a.ID, a.Status)
+			}
+			continue
+		}
+		top, hasBid := maxBid[a.ID]
+		if !hasBid {
+			if a.WinnerID != nil || a.WinningPrice != nil {
+				t.Fatalf("auction %d: 入札0件なのに落札者がいる", a.ID)
+			}
+			continue
+		}
+		if a.WinnerID == nil || *a.WinnerID != top.UserID {
+			t.Fatalf("auction %d: winner_id = %v, want %d", a.ID, a.WinnerID, top.UserID)
+		}
+		if a.WinningPrice == nil || *a.WinningPrice != top.Amount {
+			t.Fatalf("auction %d: winning_price = %v, want %d", a.ID, a.WinningPrice, top.Amount)
+		}
+	}
+}
+
+func TestGeneratedBidsCountAndIDs(t *testing.T) {
+	cfg := Scales["small"]
+	cfg.Seed = DefaultSeed
+	ds := Generate(cfg)
+
+	if len(ds.Bids) != cfg.Bids {
+		t.Fatalf("bids = %d件, want %d", len(ds.Bids), cfg.Bids)
+	}
+	if ds.Bids[0].ID != SeedMaxBidID+1 {
+		t.Errorf("最初の bid id = %d, want %d", ds.Bids[0].ID, SeedMaxBidID+1)
+	}
+	// upcoming には入札しない
+	status := map[int64]string{}
+	for _, a := range ds.Auctions {
+		status[a.ID] = a.Status
+	}
+	for _, b := range ds.Bids {
+		if status[b.AuctionID] == "upcoming" {
+			t.Fatalf("upcoming の auction %d に入札がある", b.AuctionID)
+		}
+		if b.UserID <= SeedMaxUserID {
+			t.Fatalf("bid %d の入札者がシードユーザー %d", b.ID, b.UserID)
+		}
+	}
+}
