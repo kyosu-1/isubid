@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -230,5 +232,98 @@ func getJSON(t *testing.T, url string, dest any) {
 	}
 	if err := json.NewDecoder(res.Body).Decode(dest); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type auctionCreatedJSON struct {
+	ID            int64     `json:"id"`
+	Title         string    `json:"title"`
+	StartingPrice int64     `json:"starting_price"`
+	EndsAt        time.Time `json:"ends_at"`
+	Status        string    `json:"status"`
+}
+
+func TestPostAuction(t *testing.T) {
+	ts := newTestServer(t)
+	initApp(t, ts)
+	c := loginSeedUser(t, ts.URL, "seed_user_03")
+
+	before := time.Now().UTC()
+	res, err := c.Post(ts.URL+"/auctions", "application/json", strings.NewReader(
+		`{"title":"テスト椅子","description":"説明","category_id":1,"starting_price":5000,"duration_seconds":30}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", res.StatusCode)
+	}
+	var created auctionCreatedJSON
+	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == 0 {
+		t.Error("id が 0")
+	}
+	if created.Status != "live" {
+		t.Errorf("status = %q, want live", created.Status)
+	}
+	if created.StartingPrice != 5000 {
+		t.Errorf("starting_price = %d, want 5000", created.StartingPrice)
+	}
+	// ends_at は now + 30秒 のはず
+	lo, hi := before.Add(29*time.Second), time.Now().UTC().Add(31*time.Second)
+	if created.EndsAt.Before(lo) || created.EndsAt.After(hi) {
+		t.Errorf("ends_at = %v, want in [%v, %v]", created.EndsAt, lo, hi)
+	}
+
+	// 一覧に live として現れ、詳細も引ける
+	var d auctionDetailJSON
+	getJSON(t, fmt.Sprintf("%s/auctions/%d", ts.URL, created.ID), &d)
+	if d.Status != "live" || d.CurrentPrice != 5000 || len(d.Bids) != 0 {
+		t.Errorf("詳細が不正: status=%q current_price=%d bids=%d", d.Status, d.CurrentPrice, len(d.Bids))
+	}
+	if d.Seller.Name != "seed_user_03" {
+		t.Errorf("seller = %q, want seed_user_03", d.Seller.Name)
+	}
+}
+
+func TestPostAuctionValidation(t *testing.T) {
+	ts := newTestServer(t)
+	initApp(t, ts)
+	c := loginSeedUser(t, ts.URL, "seed_user_03")
+
+	for _, tt := range []struct {
+		name string
+		body string
+		want int
+	}{
+		{"title が空", `{"title":"","description":"d","category_id":1,"starting_price":5000,"duration_seconds":30}`, http.StatusBadRequest},
+		{"starting_price が0", `{"title":"t","description":"d","category_id":1,"starting_price":0,"duration_seconds":30}`, http.StatusBadRequest},
+		{"duration が短すぎる", `{"title":"t","description":"d","category_id":1,"starting_price":5000,"duration_seconds":5}`, http.StatusBadRequest},
+		{"duration が長すぎる", `{"title":"t","description":"d","category_id":1,"starting_price":5000,"duration_seconds":301}`, http.StatusBadRequest},
+		{"存在しないカテゴリ", `{"title":"t","description":"d","category_id":999,"starting_price":5000,"duration_seconds":30}`, http.StatusBadRequest},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := c.Post(ts.URL+"/auctions", "application/json", strings.NewReader(tt.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			res.Body.Close()
+			if res.StatusCode != tt.want {
+				t.Errorf("status = %d, want %d", res.StatusCode, tt.want)
+			}
+		})
+	}
+
+	// 未ログインは 401
+	res, err := http.Post(ts.URL+"/auctions", "application/json", strings.NewReader(
+		`{"title":"t","description":"d","category_id":1,"starting_price":5000,"duration_seconds":30}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("未ログイン status = %d, want 401", res.StatusCode)
 	}
 }

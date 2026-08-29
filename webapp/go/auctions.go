@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -181,5 +182,66 @@ func (h *handler) getAuction(w http.ResponseWriter, r *http.Request) {
 		WinnerID:       nullInt64Ptr(a.WinnerID),
 		WinningPrice:   nullInt64Ptr(a.WinningPrice),
 		Bids:           bids,
+	})
+}
+
+// postAuction は新規出品。出品と同時に live になる(upcoming を経由しない)。
+func (h *handler) postAuction(w http.ResponseWriter, r *http.Request) {
+	userID, ok := currentUserID(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "login required")
+		return
+	}
+	var req struct {
+		Title           string `json:"title"`
+		Description     string `json:"description"`
+		CategoryID      int64  `json:"category_id"`
+		StartingPrice   int64  `json:"starting_price"`
+		DurationSeconds int64  `json:"duration_seconds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Title == "" || len([]rune(req.Title)) > 255 {
+		writeError(w, http.StatusBadRequest, "invalid title")
+		return
+	}
+	if req.StartingPrice < 1 {
+		writeError(w, http.StatusBadRequest, "invalid starting_price")
+		return
+	}
+	if req.DurationSeconds < 10 || req.DurationSeconds > 300 {
+		writeError(w, http.StatusBadRequest, "invalid duration_seconds")
+		return
+	}
+	var exists int
+	err := h.db.GetContext(r.Context(), &exists, "SELECT 1 FROM categories WHERE id = ?", req.CategoryID)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusBadRequest, "invalid category_id")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	now := time.Now().UTC()
+	endsAt := now.Add(time.Duration(req.DurationSeconds) * time.Second)
+	res, err := h.db.ExecContext(r.Context(),
+		"INSERT INTO auctions (seller_id, category_id, title, description, starting_price, starts_at, ends_at, status) "+
+			"VALUES (?, ?, ?, ?, ?, ?, ?, 'live')",
+		userID, req.CategoryID, req.Title, req.Description, req.StartingPrice, now, endsAt)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	id, _ := res.LastInsertId()
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":             id,
+		"title":          req.Title,
+		"starting_price": req.StartingPrice,
+		"ends_at":        endsAt,
+		"status":         "live",
 	})
 }
