@@ -71,13 +71,36 @@ const generatedEpochLiteral = "2100-01-01 00:00:00"
 // 当てると TIMESTAMPDIFF が約8億3600万秒となり ends_at が2052年へ飛ぶ。
 //
 // closed は過去データなので書き換えない(走行時刻に依存しない)。
+//
+// bids.created_at にも auctions と同じ付け替えが必要である。GET /auctions/:id は
+// bids を ORDER BY created_at DESC, id DESC で返し、ベンチの単調性検査
+// (reconcileAuction 経由の ValidateBidsInvariant)はその並び順を受理順とみなして
+// amount の単調性を検証する。generatedEpoch が過去日付(旧2000-01-01)だった間は、
+// 生成bidのcreated_atが常に実時刻より過去になるため、走行中に入る新規bid
+// (created_atはbidsのDEFAULT CURRENT_TIMESTAMP(6)で実時刻)は常にDESC順で先頭に来て
+// 「たまたま」整合していた。generatedEpochをDuplicate entry対策で未来日付
+// (2100-01-01)に変更したことで、この偶然の整合が崩れる: 生成bidのcreated_atが
+// 実時刻より未来のままだと、走行中の新規bidはDESC順で末尾に回り、amountの
+// 単調性が壊れる。auctionsと同じ基準(generatedEpochLiteral)・同じシフト量で
+// bids.created_atも書き換えることで、この崩れを防ぐ。
+//
+// bids に auction_id のインデックスは無い(意図的、他クエリと同じ理由でそのまま)ため、
+// このUPDATEはbids全体を1回フルスキャンする。対象になるのはlive/upcoming分の生成bidのみ
+// (small規模で約1,400件、full規模でも6,000件未満)であり、フルスキャン1回のコストは許容する。
 func applyGeneratedSchedule(ctx context.Context, db *sqlx.DB, base time.Time) error {
-	_, err := db.ExecContext(ctx,
+	if _, err := db.ExecContext(ctx,
 		"UPDATE auctions SET "+
 			"starts_at = DATE_ADD(?, INTERVAL TIMESTAMPDIFF(SECOND, ?, starts_at) SECOND), "+
 			"ends_at   = DATE_ADD(?, INTERVAL TIMESTAMPDIFF(SECOND, ?, ends_at)   SECOND) "+
 			"WHERE id > ? AND status IN ('live','upcoming')",
-		base, generatedEpochLiteral, base, generatedEpochLiteral, seedMaxAuctionID)
+		base, generatedEpochLiteral, base, generatedEpochLiteral, seedMaxAuctionID); err != nil {
+		return err
+	}
+	_, err := db.ExecContext(ctx,
+		"UPDATE bids b JOIN auctions a ON a.id = b.auction_id SET "+
+			"b.created_at = DATE_ADD(?, INTERVAL TIMESTAMPDIFF(SECOND, ?, b.created_at) SECOND) "+
+			"WHERE a.id > ? AND a.status IN ('live','upcoming')",
+		base, generatedEpochLiteral, seedMaxAuctionID)
 	return err
 }
 
