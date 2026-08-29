@@ -195,3 +195,100 @@ Step 1(staleness版)・2 とも `docker compose -f dev/compose.yaml up -d --buil
 うえで走行(各回とも1回目の実行で期待どおりのクリティカルが検出された)。破壊は毎回
 `git checkout webapp/go/feed.go` で復元し、最終的に `git status --short` /
 `git diff HEAD -- webapp/ bench/` が空であることを確認済み。
+
+## 3-3 通知
+
+### 設計判断
+
+- **outbid の期待値は「抜かれた回数」ではない**: ファンアウトは入札済み全員宛なので、
+  期待件数は「自分が入札した各オークションで、自分の最初の入札より後に受理された
+  他ユーザーの入札の総数」。両者は一致しないため、混同すると検証がずれる
+- **下限比較にとどめる**: pending 入札を数えず、かつベンチはシードユーザーとして
+  ログインするためシード入札ぶんの通知が上乗せされうる。「受信数 < 下限なら違反」とする
+- **「自分宛のみ」は新規ユーザーの0件で検出する**: レスポンスに user_id を含めずに
+  他人宛の混入を検出するため、一度も入札していない新規ユーザーの通知が0件であることを
+  Validation で確認する
+
+### ベンチのベンチ実測(2026-08-29)
+
+| 壊し方 | 結果 |
+|---|---|
+| outbid ファンアウトを削除 | `RESULT: FAIL` / critical 20件 / `outbid通知が 0件 (期待: 1631件以上、欠落の疑い)` |
+| won 通知を削除 | `RESULT: FAIL` / critical 5件 / `auction 4 を落札したのに won通知が無い` |
+| 通知一覧から `WHERE user_id = ?` を削除 | `RESULT: FAIL` / critical 1件 / `入札していない新規ユーザーに通知が 30868件 (期待: 0件、他人宛の混入)` |
+| 復元後 | `RESULT: PASS` / critical 0件 / `SCORE: 40247` |
+
+### 実測ログ(抜粋)
+
+**Step 1: `webapp/go/bids.go` のファンアウトのループ本体(`INSERT INTO notifications`)をコメントアウト**
+
+```
+ERR: validation: critical: user 12: outbid通知が 0件 (期待: 1631件以上、欠落の疑い)
+ERR: validation: critical: user 13: outbid通知が 0件 (期待: 1554件以上、欠落の疑い)
+ERR: validation: critical: user 9: outbid通知が 0件 (期待: 1567件以上、欠落の疑い)
+ERR: validation: critical: user 8: outbid通知が 0件 (期待: 1503件以上、欠落の疑い)
+ERR: validation: critical: user 7: outbid通知が 0件 (期待: 1630件以上、欠落の疑い)
+(以下 critical 15件省略、計20件、シードユーザー1〜20全員が同じパターン)
+SCORE: 40312  (raw 40332, penalty 20)
+  GET /auctions            : 14084回 (14084点)
+  GET /auctions/:id        : 14142回 (14142点)
+  POST /auctions/:id/bids  : 1844回 (9220点)
+  GET /auctions/:id/bids   : 1844回 (1844点)
+  GET /notifications       : 521回 (1042点)
+ERRORS: 20件 (critical: 20件)
+RESULT: FAIL
+```
+
+**Step 2: `bids.go` を復元し、`webapp/go/closer.go` の won 通知 INSERT をコメントアウト**
+
+```
+ERR: validation: critical: user 3: auction 4 を落札したのに won通知が無い
+ERR: validation: critical: user 11: auction 2 を落札したのに won通知が無い
+ERR: validation: critical: user 16: auction 6 を落札したのに won通知が無い
+ERR: validation: critical: user 8: auction 8 を落札したのに won通知が無い
+ERR: validation: critical: user 12: auction 10 を落札したのに won通知が無い
+SCORE: 39600  (raw 39605, penalty 5)
+  GET /auctions            : 13872回 (13872点)
+  GET /auctions/:id        : 13947回 (13947点)
+  POST /auctions/:id/bids  : 1796回 (8980点)
+  GET /auctions/:id/bids   : 1796回 (1796点)
+  GET /notifications       : 505回 (1010点)
+ERRORS: 5件 (critical: 5件)
+RESULT: FAIL
+```
+
+**Step 3: `closer.go` を復元し、`webapp/go/notifications.go` のクエリから `WHERE user_id = ?` を除去(引数も除去、`userID` は握りつぶし)**
+
+```
+ERR: validation: critical: 入札していない新規ユーザーに通知が 30868件 (期待: 0件、他人宛の混入)
+SCORE: 40654  (raw 40655, penalty 1)
+  GET /auctions            : 14394回 (14394点)
+  GET /auctions/:id        : 14549回 (14549点)
+  POST /auctions/:id/bids  : 1805回 (9025点)
+  GET /auctions/:id/bids   : 1805回 (1805点)
+  GET /notifications       : 441回 (882点)
+ERRORS: 1件 (critical: 1件)
+RESULT: FAIL
+```
+
+**Step 4: `git checkout webapp/go/bids.go webapp/go/closer.go webapp/go/notifications.go` で3ファイルすべて復元して再走行**
+
+```
+SCORE: 40247  (raw 40247, penalty 0)
+  GET /auctions            : 14193回 (14193点)
+  GET /auctions/:id        : 14256回 (14256点)
+  POST /auctions/:id/bids  : 1798回 (8990点)
+  GET /auctions/:id/bids   : 1798回 (1798点)
+  GET /notifications       : 505回 (1010点)
+ERRORS: 0件 (critical: 0件)
+RESULT: PASS
+```
+
+Step 1〜4 とも `docker compose -f dev/compose.yaml up -d --build` で再ビルドしたうえで
+`-duration 60s` で走行(各回とも1回目の実行で期待どおりの結果が得られた)。破壊は毎回
+Step 4 の `git checkout` で3ファイルまとめて復元し、最終的に `git status --short` /
+`git diff HEAD -- webapp/ bench/` が空であることを確認済み。なお本セッションの
+スコアは前節までのスコアと単純比較できない(実行間で最大12%程度のばらつきが実測されて
+おり、環境要因と切り分けられていないため)。ここでは復元後の `SCORE: 40247` を「validation
+が critical を出さない状態でベンチが完走した」ことの証跡として記録するにとどめ、他の
+セクションのスコアとの優劣は論じない。
