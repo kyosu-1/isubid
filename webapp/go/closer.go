@@ -78,6 +78,11 @@ func (h *handler) closeAuction(ctx context.Context, auctionID int64) error {
 			top.UserID, top.Amount, auctionID); err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(ctx,
+			"INSERT INTO notifications (user_id, type, auction_id, message) VALUES (?, 'won', ?, ?)",
+			top.UserID, auctionID, "「"+a.Title+"」を落札しました"); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

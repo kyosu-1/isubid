@@ -105,3 +105,38 @@ func TestCloseAuctionIdempotent(t *testing.T) {
 		t.Errorf("auction 11 が書き換えられた: winner=%v price=%v, want 12/12000", a.WinnerID, a.WinningPrice)
 	}
 }
+
+// 落札確定時、落札者に won 通知が1件入る。
+func TestCloseAuctionNotifiesWinner(t *testing.T) {
+	ts := newTestServer(t)
+	initApp(t, ts)
+	h := newTestHandler(t)
+	ctx := context.Background()
+
+	if _, err := h.db.ExecContext(ctx,
+		"UPDATE auctions SET ends_at = DATE_SUB(NOW(6), INTERVAL 1 SECOND) WHERE id IN (1, 5)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.closeDueAuctions(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// auction 1 の落札者は user 4
+	var n int64
+	if err := h.db.GetContext(ctx, &n,
+		"SELECT COUNT(*) FROM notifications WHERE user_id = 4 AND auction_id = 1 AND type = 'won'"); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("won 通知が %d件, want 1", n)
+	}
+
+	// auction 5 は入札0件なので won 通知は出ない
+	if err := h.db.GetContext(ctx, &n,
+		"SELECT COUNT(*) FROM notifications WHERE auction_id = 5 AND type = 'won'"); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("入札0件の auction 5 に won 通知が %d件, want 0", n)
+	}
+}
