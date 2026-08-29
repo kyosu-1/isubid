@@ -18,6 +18,7 @@ SQL_DIR="$(cd "$(dirname "$0")" && pwd)"
 run() {
   mysql -h "$ISUBID_DB_HOST" -P "$ISUBID_DB_PORT" \
         -u "$ISUBID_DB_USER" -p"$ISUBID_DB_PASSWORD" \
+        --default-character-set=utf8mb4 \
         "$ISUBID_DB_NAME" < "$1"
 }
 
