@@ -73,8 +73,25 @@ func applyGeneratedSchedule(ctx context.Context, db *sqlx.DB, base time.Time) er
 	return err
 }
 
+// initScriptTimeout は loadViaInitScript が init.sh に許す上限時間。
+// リクエストのキャンセルとは無関係な、この処理専用の打ち切りである。
+const initScriptTimeout = 10 * time.Minute
+
 // loadViaInitScript は init.sh に投入を委譲する(mysql クライアントでのバルクロード)。
-func loadViaInitScript(ctx context.Context, sqlDir string) error {
+//
+// リクエストの context は受け取らない。exec.CommandContext が Kill するのは
+// 直接の子(sh)だけで、init.sh の run() がダンプファイルごとに起動する mysql の
+// 孫プロセスには届かない。dev/nginx.conf は proxy_read_timeout を設定しておらず
+// 既定の60秒でnginxが上流接続を切るため、大きいスケールのロードはそれを
+// 超えうる。そこで r.Context() をここに渡すと、切断でキャンセルされた瞬間に
+// sh だけが死んで mysql が生き残り、デタッチされたまま書き込みを続ける。
+// POST /initialize は 00_schema.sql の DROP TABLE から始まる破壊的な全入れ替えで、
+// 完走すれば一貫した状態になるが、志半ばで打ち切られたロードはオーファン化した
+// mysql が次の初期化の新テーブルに書き込みを続け、競合を起こす。そのため
+// 打ち切りはリクエストから独立させ、十分に長い時間(initScriptTimeout)を許す。
+func loadViaInitScript(sqlDir string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), initScriptTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", filepath.Join(sqlDir, "init.sh"))
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
@@ -111,7 +128,7 @@ func (h *handler) postInitialize(w http.ResponseWriter, r *http.Request) {
 	defer db.Close()
 
 	if generatedDir != "" {
-		if err := loadViaInitScript(r.Context(), sqlDir); err != nil {
+		if err := loadViaInitScript(sqlDir); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
