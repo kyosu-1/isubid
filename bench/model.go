@@ -42,3 +42,12 @@ type BidCreated struct {
 	Amount    int64     `json:"amount"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+type Notification struct {
+	ID        int64     `json:"id"`
+	Type      string    `json:"type"`
+	AuctionID int64     `json:"auction_id"`
+	Message   string    `json:"message"`
+	IsRead    bool      `json:"is_read"`
+	CreatedAt time.Time `json:"created_at"`
+}

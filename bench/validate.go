@@ -235,3 +235,14 @@ func ValidateFeedPage(bids []Bid, since int64) error {
 	}
 	return nil
 }
+
+// ValidateNotificationsOrdered は通知一覧が id 降順であることを検証する。
+func ValidateNotificationsOrdered(ns []Notification) error {
+	for i := 1; i < len(ns); i++ {
+		if ns[i].ID >= ns[i-1].ID {
+			return fmt.Errorf("GET /notifications: id 降順でない (index %d: id=%d の前が id=%d)",
+				i, ns[i].ID, ns[i-1].ID)
+		}
+	}
+	return nil
+}

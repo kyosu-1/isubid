@@ -172,6 +172,24 @@ func (c *Client) PostBid(ctx context.Context, auctionID, amount int64) (*BidCrea
 	return &bid, code, nil
 }
 
+// GetNotifications は自分宛の通知一覧を取得する。
+func (c *Client) GetNotifications(ctx context.Context) ([]Notification, error) {
+	code, b, err := c.doJSON(ctx, http.MethodGet, "/notifications", nil)
+	if err != nil {
+		return nil, err
+	}
+	if code != http.StatusOK {
+		return nil, fmt.Errorf("GET /notifications: status %d (body: %s)", code, b)
+	}
+	var body struct {
+		Notifications []Notification `json:"notifications"`
+	}
+	if err := json.Unmarshal(b, &body); err != nil {
+		return nil, fmt.Errorf("GET /notifications: 不正なJSON: %w", err)
+	}
+	return body.Notifications, nil
+}
+
 // GetBidFeed は入札フィードを取得する。since より大きい id の入札が id 昇順で返る。
 func (c *Client) GetBidFeed(ctx context.Context, auctionID, since int64) ([]Bid, error) {
 	path := fmt.Sprintf("/auctions/%d/bids?since=%d", auctionID, since)
