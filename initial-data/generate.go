@@ -42,12 +42,22 @@ type Bid struct {
 	CreatedAt time.Time
 }
 
+type Notification struct {
+	ID        int64
+	UserID    int64
+	Type      string // "outbid" | "won"
+	AuctionID int64
+	Message   string
+	CreatedAt time.Time
+}
+
 // Dataset は1回の生成で得られる全データ。
 type Dataset struct {
-	Config   Config
-	Users    []User
-	Auctions []Auction
-	Bids     []Bid
+	Config        Config
+	Users         []User
+	Auctions      []Auction
+	Bids          []Bid
+	Notifications []Notification
 }
 
 // chairNames / chairDescs は生成タイトルの素材。
@@ -68,6 +78,19 @@ func pad5(n int64) string {
 	return fmt.Sprintf("%05d", n)
 }
 
+// notificationTitleMaxRunes は通知文面に埋め込むタイトルの上限。
+// notifications.message は VARCHAR(255) で、最も長い接尾辞
+// 「」で他のユーザーに競り負けました は17文字。webapp/go 側の同名定数と揃えること。
+const notificationTitleMaxRunes = 200
+
+func truncateForNotification(title string) string {
+	r := []rune(title)
+	if len(r) <= notificationTitleMaxRunes {
+		return title
+	}
+	return string(r[:notificationTitleMaxRunes])
+}
+
 // Generate は cfg に従って初期データを生成する。
 // cfg.Seed で初期化した単一の *rand.Rand を全生成で共有するため、
 // 同じ cfg なら結果は完全に一致する。
@@ -78,6 +101,7 @@ func Generate(cfg Config) *Dataset {
 	ds.Auctions = generateAuctions(cfg, rng, ds.Users)
 	ds.Bids = generateBids(cfg, rng, ds.Auctions, ds.Users)
 	backfillWinners(ds.Auctions, ds.Bids)
+	ds.Notifications = generateNotifications(ds.Auctions, ds.Bids)
 	return ds
 }
 
@@ -218,6 +242,61 @@ func generateBids(cfg Config, rng *rand.Rand, auctions []Auction, users []User) 
 		}
 	}
 	return bids
+}
+
+// generateNotifications は closed オークションの落札結果から過去の通知を作る。
+//
+// 目的は notifications テーブルの user_id フルスキャン(インデックス無し)に
+// 走査対象を与えることであり、宛先は生成ユーザーに限る。シードユーザー宛を作ると
+// GET /notifications の応答が初手から巨大になり、通知確認シナリオのコストが
+// 実データではなく生成データに支配される。
+//
+// 1オークションにつき、落札者へ won を1件、他の入札者(最大3人)へ outbid を1件ずつ。
+func generateNotifications(auctions []Auction, bids []Bid) []Notification {
+	bidders := map[int64][]int64{} // auctionID -> 入札した user_id(重複除去済み、初出順)
+	seen := map[[2]int64]bool{}
+	for _, b := range bids {
+		key := [2]int64{b.AuctionID, b.UserID}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		bidders[b.AuctionID] = append(bidders[b.AuctionID], b.UserID)
+	}
+
+	const maxOutbidPerAuction = 3
+	var out []Notification
+	nextID := int64(1) // シードは notifications を持たない
+	for i := range auctions {
+		a := &auctions[i]
+		if a.Status != "closed" || a.WinnerID == nil {
+			continue
+		}
+		title := truncateForNotification(a.Title)
+
+		out = append(out, Notification{
+			ID: nextID, UserID: *a.WinnerID, Type: "won", AuctionID: a.ID,
+			Message: "「" + title + "」を落札しました", CreatedAt: a.EndsAt,
+		})
+		nextID++
+
+		n := 0
+		for _, uid := range bidders[a.ID] {
+			if uid == *a.WinnerID {
+				continue
+			}
+			if n >= maxOutbidPerAuction {
+				break
+			}
+			out = append(out, Notification{
+				ID: nextID, UserID: uid, Type: "outbid", AuctionID: a.ID,
+				Message: "「" + title + "」で他のユーザーに競り負けました", CreatedAt: a.EndsAt,
+			})
+			nextID++
+			n++
+		}
+	}
+	return out
 }
 
 // backfillWinners は closed オークションの winner_id / winning_price を、

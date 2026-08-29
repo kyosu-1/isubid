@@ -76,6 +76,35 @@ func TestGenerateIsDeterministic(t *testing.T) {
 			t.Fatalf("auctions[%d].WinningPrice が不一致: %d vs %d", i, *a.Auctions[i].WinningPrice, *b.Auctions[i].WinningPrice)
 		}
 	}
+
+	// Bids も完全に一致する必要がある
+	if len(a.Bids) != len(b.Bids) {
+		t.Fatalf("bids 件数が不一致: %d vs %d", len(a.Bids), len(b.Bids))
+	}
+	for i := range a.Bids {
+		if a.Bids[i].ID != b.Bids[i].ID ||
+			a.Bids[i].AuctionID != b.Bids[i].AuctionID ||
+			a.Bids[i].UserID != b.Bids[i].UserID ||
+			a.Bids[i].Amount != b.Bids[i].Amount ||
+			!a.Bids[i].CreatedAt.Equal(b.Bids[i].CreatedAt) {
+			t.Fatalf("bids[%d] が不一致: %+v vs %+v", i, a.Bids[i], b.Bids[i])
+		}
+	}
+
+	// Notifications も完全に一致する必要がある
+	if len(a.Notifications) != len(b.Notifications) {
+		t.Fatalf("notifications 件数が不一致: %d vs %d", len(a.Notifications), len(b.Notifications))
+	}
+	for i := range a.Notifications {
+		if a.Notifications[i].ID != b.Notifications[i].ID ||
+			a.Notifications[i].UserID != b.Notifications[i].UserID ||
+			a.Notifications[i].Type != b.Notifications[i].Type ||
+			a.Notifications[i].AuctionID != b.Notifications[i].AuctionID ||
+			a.Notifications[i].Message != b.Notifications[i].Message ||
+			!a.Notifications[i].CreatedAt.Equal(b.Notifications[i].CreatedAt) {
+			t.Fatalf("notifications[%d] が不一致: %+v vs %+v", i, a.Notifications[i], b.Notifications[i])
+		}
+	}
 }
 
 // live の ends_at 順が id 順と相関していると、一覧の ORDER BY ends_at ASC を
@@ -269,6 +298,71 @@ func TestGeneratedBidsCountAndIDs(t *testing.T) {
 		}
 		if b.UserID <= SeedMaxUserID {
 			t.Fatalf("bid %d の入札者がシードユーザー %d", b.ID, b.UserID)
+		}
+	}
+}
+
+// 通知は生成ユーザー宛のみ。シードユーザー宛を作ると
+// GET /notifications の応答が初手から巨大になり、通知確認シナリオのコストが
+// 実データではなく生成データに支配される。
+func TestGeneratedNotificationsTargetGeneratedUsersOnly(t *testing.T) {
+	cfg := Scales["small"]
+	cfg.Seed = DefaultSeed
+	ds := Generate(cfg)
+
+	if len(ds.Notifications) == 0 {
+		t.Fatal("通知が1件も生成されていない(user_id フルスキャンに走査対象を与える目的が果たせない)")
+	}
+	for _, n := range ds.Notifications {
+		if n.UserID <= SeedMaxUserID {
+			t.Fatalf("シードユーザー %d 宛の通知が生成されている (notification %d)", n.UserID, n.ID)
+		}
+		if n.Type != "outbid" && n.Type != "won" {
+			t.Fatalf("notification %d: type = %q", n.ID, n.Type)
+		}
+	}
+}
+
+// won 通知は「落札者が確定した closed オークション」にだけ、その落札者宛に1件。
+func TestGeneratedWonNotificationsMatchWinners(t *testing.T) {
+	cfg := Scales["small"]
+	cfg.Seed = DefaultSeed
+	ds := Generate(cfg)
+
+	wonBy := map[int64][]int64{} // auctionID -> userIDs
+	for _, n := range ds.Notifications {
+		if n.Type == "won" {
+			wonBy[n.AuctionID] = append(wonBy[n.AuctionID], n.UserID)
+		}
+	}
+	for _, a := range ds.Auctions {
+		got := wonBy[a.ID]
+		if a.Status != "closed" || a.WinnerID == nil {
+			if len(got) != 0 {
+				t.Fatalf("auction %d (status=%s winner=%v) に won 通知が %d件", a.ID, a.Status, a.WinnerID, len(got))
+			}
+			continue
+		}
+		if len(got) != 1 || got[0] != *a.WinnerID {
+			t.Fatalf("auction %d: won 通知が %v (期待: [%d] の1件)", a.ID, got, *a.WinnerID)
+		}
+	}
+}
+
+// notifications.message は VARCHAR(255)。Phase 3 で、溢れると closeAuction の
+// トランザクションがロールバックしオークションが永久に live のまま残る問題を修正した。
+// 生成データも同じ制約を満たす必要がある。
+func TestGeneratedNotificationMessagesFitColumn(t *testing.T) {
+	cfg := Scales["small"]
+	cfg.Seed = DefaultSeed
+	ds := Generate(cfg)
+
+	for _, n := range ds.Notifications {
+		if r := len([]rune(n.Message)); r > 255 {
+			t.Fatalf("notification %d の message が %d文字 (VARCHAR(255) を超える)", n.ID, r)
+		}
+		if n.Message == "" {
+			t.Fatalf("notification %d の message が空", n.ID)
 		}
 	}
 }
