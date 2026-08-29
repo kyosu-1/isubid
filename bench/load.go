@@ -59,6 +59,11 @@ func (s *Scenario) bidderIteration(ctx context.Context, step *isucandar.Benchmar
 			return
 		}
 		step.AddScore(ScoreGETDetail)
+		// 走行中に終了処理バッチが closed にした可能性がある。
+		// closed への入札は 400 が正しい応答なので、エラーにせず次のイテレーションへ譲る。
+		if d.Status != "live" {
+			return
+		}
 		amount := d.CurrentPrice + 100 + rand.Int63n(400)
 
 		// C1: POST送信前にintentとして記録する。応答が届く前にctxキャンセル/転送エラーが
