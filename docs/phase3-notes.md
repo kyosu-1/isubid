@@ -292,3 +292,149 @@ Step 4 の `git checkout` で3ファイルまとめて復元し、最終的に `
 おり、環境要因と切り分けられていないため)。ここでは復元後の `SCORE: 40247` を「validation
 が critical を出さない状態でベンチが完走した」ことの証跡として記録するにとどめ、他の
 セクションのスコアとの優劣は論じない。
+
+## 3-4 出品
+
+### 設計判断
+
+- **出品は即 live**: upcoming を経由させると60秒走行のうち待ち時間が無駄になる。
+  `duration_seconds` は 20〜40秒で、走行中に closed へ遷移して落札 Validation の対象になる
+- **pubsub の購読ハンドラは即座に返す**: isucandar の `pubsub.Publish` は購読チャネルが
+  満杯だとブロックするため、ハンドラはスライスへの追記のみとし、Capacity にも余裕(1000)を持たせた
+
+### 単調増加検出器の再検証(2026-08-29、Phase 3 の母集団変化を受けて)
+
+Phase 2 では live オークション ~10件・入札者16に対し `FOR UPDATE` を外すと初回検出だったが、
+Phase 3 の出品者シナリオで live オークションが同時 ~260件に増え、入札がオークション間で
+薄く分散するようになった(1オークションあたり ~2件)ため、同一オークションへの同時入札が
+起きにくくなり検出器が無力化されていないか懸念があった。`webapp/go/bids.go` の `postBid` の
+オークション行 `SELECT` から `FOR UPDATE` を一時的に外し、`docker compose -f dev/compose.yaml
+up -d --build` で再ビルドしたうえで `cd bench && go run . -target http://localhost:8080
+-duration 60s` を実行して確認した。
+
+**結果: 1回目の実行で検出**。`bids の金額が単調増加違反`(load中のwatcherおよびValidationの
+reconcile双方)と `フィードの金額が単調増加でない` の両方の critical が出た。連鎖的に
+`winner_id` 不一致や `outbid通知` の件数不足も検出された。
+
+```
+ERR: load: critical: auction 14: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=13(amount=1161) の直後に id=12(amount=1185) が来ており単調減少でない)
+ERR: load: critical: auction 18: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=31(amount=2185) の直後に id=30(amount=2298) が来ており単調減少でない)
+ERR: load: critical: auction 144: フィードの金額が単調増加でない (id=1122(amount=3838) の次に id=1123(amount=3663))
+ERR: validation: critical: auction 14: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=13(amount=1161) の直後に id=12(amount=1185) が来ており単調減少でない)
+ERR: validation: critical: auction 18: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=31(amount=2185) の直後に id=30(amount=2298) が来ており単調減少でない)
+ERR: validation: critical: auction 144: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=1123(amount=3663) の直後に id=1122(amount=3838) が来ており単調減少でない)
+ERR: validation: critical: auction 246: winner_id が 12 (期待: 13 = 最高額 4843 の入札者)
+ERR: validation: critical: user 12: outbid通知が 104件 (期待: 105件以上、欠落の疑い)
+ERR: validation: critical: user 10: outbid通知が 100件 (期待: 101件以上、欠落の疑い)
+ERR: validation: critical: user 19: outbid通知が 149件 (期待: 151件以上、欠落の疑い)
+ERR: validation: critical: user 15: outbid通知が 92件 (期待: 93件以上、欠落の疑い)
+SCORE: 19290  (raw 19412, penalty 122)
+  GET /auctions            : 4262回 (4262点)
+  GET /auctions/:id        : 4262回 (4262点)
+  POST /auctions/:id/bids  : 1198回 (5990点)
+  GET /auctions/:id/bids   : 1198回 (1198点)
+  GET /notifications       : 535回 (1070点)
+  POST /auctions           : 526回 (2630点)
+ERRORS: 122件 (critical: 122件)
+RESULT: FAIL
+```
+
+1回目で FAIL したため、ブリーフの指示どおり2回目・3回目は実施していない
+(「PASSした場合のみ最大2回追試する」規定であり、1回目でFAILならそこで確定)。
+`git checkout webapp/go/bids.go` で復元・再ビルドし、通常走行が `RESULT: PASS`(critical
+0件)に戻ることを確認した。**結論: Phase 3 の出品者シナリオ導入後も、単調増加検出器は
+`FOR UPDATE` 除去を初回で検出できており、Phase 2 が確立した保証は Phase 3 で劣化していない。**
+
+### ベンチのベンチ実測(2026-08-29)
+
+| 壊し方 | 結果 |
+|---|---|
+| 出品を `status='upcoming'` で INSERT | `RESULT: FAIL` / critical 544件 |
+| 復元後 | `RESULT: PASS` / critical 0件 |
+
+### 実測ログ(抜粋)
+
+**Step 1: `webapp/go/auctions.go` の `postAuction` の INSERT 文の `status` を `'live'` → `'upcoming'` に変更**
+
+実際に検出されたのは、ブリーフが想定していた `POST /auctions: 応答が不一致` ではなく、
+`GET /stats/me` の出品直後チェック(`listed_count>=1` なのに `live_count=0`)と、
+終了処理バッチが `live` を対象にスキャンするため `upcoming` のまま `ends_at` を過ぎた
+オークションが `closed` に遷移しない Validation 側の検出だった(いずれも「出品したオークションが
+live 一覧に出ないことによる critical」に該当し、ブリーフの想定範囲内)。
+
+```
+ERR: load: critical: GET /stats/me: 出品直後なのに listed_count=2 live_count=0
+ERR: load: critical: GET /stats/me: 出品直後なのに listed_count=1 live_count=0
+(以下 load フェーズで同型の critical が計326件省略)
+ERR: validation: critical: auction 192: ends_at (2026-08-29T11:53:46Z) を過ぎているのに status が "upcoming" (期待: closed)
+ERR: validation: critical: auction 193: ends_at (2026-08-29T11:53:47Z) を過ぎているのに status が "upcoming" (期待: closed)
+(以下 validation フェーズで同型の critical が計218件省略)
+SCORE: 44680  (raw 45224, penalty 544)
+  GET /auctions            : 17907回 (17907点)
+  GET /auctions/:id        : 17918回 (17918点)
+  POST /auctions/:id/bids  : 974回 (4870点)
+  GET /auctions/:id/bids   : 974回 (974点)
+  GET /notifications       : 510回 (1020点)
+  POST /auctions           : 507回 (2535点)
+ERRORS: 544件 (critical: 544件)
+RESULT: FAIL
+```
+
+**Step 2: `git checkout webapp/go/auctions.go` で復元して再走行**
+
+```
+SCORE: 18278  (raw 18278, penalty 0)
+  GET /auctions            : 3990回 (3990点)
+  GET /auctions/:id        : 3989回 (3989点)
+  POST /auctions/:id/bids  : 1128回 (5640点)
+  GET /auctions/:id/bids   : 1127回 (1127点)
+  GET /notifications       : 511回 (1022点)
+  POST /auctions           : 502回 (2510点)
+ERRORS: 0件 (critical: 0件)
+RESULT: PASS
+```
+
+Step 1〜2 とも `docker compose -f dev/compose.yaml up -d --build` で再ビルドしたうえで
+`-duration 60s` で走行(各回とも1回目の実行で期待どおりの結果が得られた)。破壊は
+Step 2 の `git checkout` で復元し、最終的に `git status --short` / `git diff HEAD --
+webapp/go` が空であることを確認済み。
+
+## Phase 3 総括
+
+### 最終スコア(2026-08-29、初期実装、60秒走行×3回)
+
+| 回 | スコア | 結果 |
+|---|---|---|
+| 1 | 18622 | PASS |
+| 2 | 18190 | PASS |
+| 3 | 17378 | PASS |
+
+3回とも critical 0件で `RESULT: PASS`。最大18622・最小17378の差は1244で、平均(約18063)に
+対して約6.9%のばらつきに収まっており、ブリーフが求める±20%以内の再現性を満たす。
+
+内訳(1回目):
+```
+SCORE: 18622  (raw 18622, penalty 0)
+  GET /auctions            : 4183回 (4183点)
+  GET /auctions/:id        : 4184回 (4184点)
+  POST /auctions/:id/bids  : 1150回 (5750点)
+  GET /auctions/:id/bids   : 1150回 (1150点)
+  GET /notifications       : 485回 (970点)
+  POST /auctions           : 477回 (2385点)
+ERRORS: 0件 (critical: 0件)
+RESULT: PASS
+```
+
+このスコア(~18000台)は3-1〜3-3節に記録されているスコア(~30000〜40000台)とは水準が
+異なるが、これは開発機のブレ(実行間で最大12%程度)に加え、前タスクで出品者シナリオが
+加わり同時 live オークション数が ~10件から ~260件規模へ変わったことで一覧エンドポイントの
+オークションごとN+1が負荷特性を作り変えたためであり、両者は測っているものが異なる。
+本ドキュメントでは前節までと同様、異なるフェーズ・異なる負荷特性のスコアを優劣として
+比較しない。
+
+### Phase 4 への持ち越し
+
+- 一覧 `GET /auctions` の非トランザクショナルなレース(検索実装時に一貫化が必要)
+- 終了処理バッチの複数台での二重実行(Phase 5 の IaC でレギュレーション化)
+- `go.mod` の go ディレクティブ不揃い(webapp 1.26.1 / bench 1.26.4)
+- compose の nginx readiness 未設定(起動直後の502ウィンドウ)

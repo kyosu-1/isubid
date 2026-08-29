@@ -15,6 +15,9 @@ docker compose -f dev/compose.yaml up -d --build
 # 2. ベンチ実行(60秒の負荷走行+整合性検証)
 cd bench && go run . -target http://localhost:8080
 
+# worker 数を変える(既定: bidders 8 / watchers 4 / notifiers 2 / sellers 2)
+go run . -target http://localhost:8080 -bidders 16 -sellers 4
+
 # 整合性チェックのみ(負荷なし)
 go run . -target http://localhost:8080 -prepare-only
 ```
@@ -34,4 +37,6 @@ cd bench && go test ./...
 
 ## ステータス
 
-Phase 2b-1(負荷走行・スコアリング)まで完了。初期データジェネレータ・pub/sub要素・フロントエンドは今後のPhase。
+Phase 3(pub/sub要素)まで完了。入札フィード・通知ファンアウト・終了処理と落札確定・
+出品者シナリオが動き、ベンチがそれぞれの整合性を検証する。
+フロントエンド・検索・アイコンBLOB・初期データジェネレータ・レギュレーション文書は Phase 4。

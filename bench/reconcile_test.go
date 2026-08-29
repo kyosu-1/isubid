@@ -112,9 +112,9 @@ func TestReconcileAuction(t *testing.T) {
 					seedBid(1, t0),
 				},
 			},
-			seedCount:  1,
-			seedPrice:  1000,
-			accepted:   []AcceptedBid{{BidID: 9, AuctionID: 1, UserID: 5, Amount: 1600}},
+			seedCount: 1,
+			seedPrice: 1000,
+			accepted:  []AcceptedBid{{BidID: 9, AuctionID: 1, UserID: 5, Amount: 1600}},
 			// current_price(1600) == expected(max(seed 1000, accepted 1600)) なので価格チェックは通る。
 			// 改変チェックのみ1件。
 			wantErrLen: 1,
