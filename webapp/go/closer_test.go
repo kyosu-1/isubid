@@ -139,4 +139,16 @@ func TestCloseAuctionNotifiesWinner(t *testing.T) {
 	if n != 0 {
 		t.Errorf("入札0件の auction 5 に won 通知が %d件, want 0", n)
 	}
+
+	// 冪等性: closeAuction を2回目に呼んでも won 通知は増えない
+	if err := h.closeAuction(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.db.GetContext(ctx, &n,
+		"SELECT COUNT(*) FROM notifications WHERE user_id = 4 AND auction_id = 1 AND type = 'won'"); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("2回目の closeAuction 後、won 通知が %d件, want 1", n)
+	}
 }
