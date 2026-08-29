@@ -19,18 +19,20 @@ type queryer interface {
 }
 
 type auctionRow struct {
-	ID            int64     `db:"id"`
-	SellerID      int64     `db:"seller_id"`
-	CategoryID    int64     `db:"category_id"`
-	Title         string    `db:"title"`
-	Description   string    `db:"description"`
-	StartingPrice int64     `db:"starting_price"`
-	StartsAt      time.Time `db:"starts_at"`
-	EndsAt        time.Time `db:"ends_at"`
-	Status        string    `db:"status"`
+	ID            int64         `db:"id"`
+	SellerID      int64         `db:"seller_id"`
+	CategoryID    int64         `db:"category_id"`
+	Title         string        `db:"title"`
+	Description   string        `db:"description"`
+	StartingPrice int64         `db:"starting_price"`
+	StartsAt      time.Time     `db:"starts_at"`
+	EndsAt        time.Time     `db:"ends_at"`
+	Status        string        `db:"status"`
+	WinnerID      sql.NullInt64 `db:"winner_id"`
+	WinningPrice  sql.NullInt64 `db:"winning_price"`
 }
 
-const auctionColumns = "id, seller_id, category_id, title, description, starting_price, starts_at, ends_at, status"
+const auctionColumns = "id, seller_id, category_id, title, description, starting_price, starts_at, ends_at, status, winner_id, winning_price"
 
 type auctionSummary struct {
 	ID           int64        `json:"id"`
@@ -55,6 +57,8 @@ type auctionDetail struct {
 	auctionSummary
 	Description   string        `json:"description"`
 	StartingPrice int64         `json:"starting_price"`
+	WinnerID      *int64        `json:"winner_id"`
+	WinningPrice  *int64        `json:"winning_price"`
 	Bids          []bidResponse `json:"bids"`
 }
 
@@ -86,6 +90,15 @@ func (h *handler) summarize(ctx context.Context, q queryer, a *auctionRow) (*auc
 		CurrentPrice: price, BidCount: bidCount,
 		StartsAt: a.StartsAt, EndsAt: a.EndsAt, Status: a.Status,
 	}, nil
+}
+
+// nullInt64Ptr は sql.NullInt64 を JSON の null 可能な *int64 に変換する。
+func nullInt64Ptr(v sql.NullInt64) *int64 {
+	if !v.Valid {
+		return nil
+	}
+	n := v.Int64
+	return &n
 }
 
 func (h *handler) getAuctions(w http.ResponseWriter, r *http.Request) {
@@ -165,6 +178,8 @@ func (h *handler) getAuction(w http.ResponseWriter, r *http.Request) {
 		auctionSummary: *s,
 		Description:    a.Description,
 		StartingPrice:  a.StartingPrice,
+		WinnerID:       nullInt64Ptr(a.WinnerID),
+		WinningPrice:   nullInt64Ptr(a.WinningPrice),
 		Bids:           bids,
 	})
 }

@@ -30,6 +30,8 @@ type AuctionDetail struct {
 	AuctionSummary
 	Description   string `json:"description"`
 	StartingPrice int64  `json:"starting_price"`
+	WinnerID      *int64 `json:"winner_id"`
+	WinningPrice  *int64 `json:"winning_price"`
 	Bids          []Bid  `json:"bids"`
 }
 

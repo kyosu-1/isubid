@@ -35,6 +35,8 @@ type auctionDetailJSON struct {
 	auctionSummaryJSON
 	Description   string    `json:"description"`
 	StartingPrice int64     `json:"starting_price"`
+	WinnerID      *int64    `json:"winner_id"`
+	WinningPrice  *int64    `json:"winning_price"`
 	Bids          []bidJSON `json:"bids"`
 }
 
@@ -190,5 +192,43 @@ func TestGetAuctionInvalidID(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", res.StatusCode)
+	}
+}
+
+func TestGetAuctionExposesWinner(t *testing.T) {
+	ts := newTestServer(t)
+	initApp(t, ts)
+
+	// auction 11 は seed で closed / winner_id=12 / winning_price=12000
+	var closed auctionDetailJSON
+	getJSON(t, ts.URL+"/auctions/11", &closed)
+	if closed.WinnerID == nil || *closed.WinnerID != 12 {
+		t.Errorf("auction 11 winner_id = %v, want 12", closed.WinnerID)
+	}
+	if closed.WinningPrice == nil || *closed.WinningPrice != 12000 {
+		t.Errorf("auction 11 winning_price = %v, want 12000", closed.WinningPrice)
+	}
+
+	// live のオークションは null
+	var live auctionDetailJSON
+	getJSON(t, ts.URL+"/auctions/1", &live)
+	if live.WinnerID != nil || live.WinningPrice != nil {
+		t.Errorf("auction 1 (live) winner = %v/%v, want null/null", live.WinnerID, live.WinningPrice)
+	}
+}
+
+// getJSON は GET して JSON をデコードするテストヘルパー。
+func getJSON(t *testing.T, url string, dest any) {
+	t.Helper()
+	res, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200", url, res.StatusCode)
+	}
+	if err := json.NewDecoder(res.Body).Decode(dest); err != nil {
+		t.Fatal(err)
 	}
 }
