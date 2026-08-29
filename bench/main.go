@@ -18,6 +18,7 @@ func main() {
 	prepareOnly := flag.Bool("prepare-only", false, "Prepare(整合性チェック)のみ実行")
 	bidders := flag.Int("bidders", 8, "入札者worker数")
 	watchers := flag.Int("watchers", 4, "ウォッチャーworker数")
+	notifiers := flag.Int("notifiers", 2, "通知確認worker数")
 	flag.Parse()
 
 	s := &Scenario{
@@ -25,6 +26,7 @@ func main() {
 		PrepareOnly: *prepareOnly,
 		Bidders:     *bidders,
 		Watchers:    *watchers,
+		Notifiers:   *notifiers,
 		Ledger:      NewLedger(),
 	}
 
@@ -82,6 +84,7 @@ func main() {
 		{ScoreGETDetail, "GET /auctions/:id"},
 		{ScorePOSTBid, "POST /auctions/:id/bids"},
 		{ScoreGETFeed, "GET /auctions/:id/bids"},
+		{ScoreGETNotifications, "GET /notifications"},
 	} {
 		count := breakdown[st.tag]
 		pt := count * scoreTable[st.tag]

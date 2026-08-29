@@ -219,3 +219,26 @@ func (s *Scenario) watcherIteration(ctx context.Context, step *isucandar.Benchma
 			fmt.Errorf("auction %d: 入札0件なのに current_price %d が starting_price %d と不一致", d.ID, d.CurrentPrice, d.StartingPrice))
 	}
 }
+
+// notifierIteration は「ログイン→通知一覧」の回遊。Load中のスコア源であり、
+// 一覧の順序(id DESC)を検証する。欠落そのものは Validation フェーズで照合する。
+func (s *Scenario) notifierIteration(ctx context.Context, step *isucandar.BenchmarkStep) {
+	c, err := NewClient(s.Target)
+	if err != nil {
+		addErr(ctx, step, ErrApplication, err)
+		return
+	}
+	if _, err := c.Login(ctx, seedUserName(), "password"); err != nil {
+		addErr(ctx, step, ErrApplication, err)
+		return
+	}
+	ns, err := c.GetNotifications(ctx)
+	if err != nil {
+		addErr(ctx, step, ErrApplication, err)
+		return
+	}
+	step.AddScore(ScoreGETNotifications)
+	if err := ValidateNotificationsOrdered(ns); err != nil {
+		addErr(ctx, step, ErrCritical, err)
+	}
+}

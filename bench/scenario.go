@@ -21,6 +21,7 @@ type Scenario struct {
 	PrepareOnly bool
 	Bidders     int
 	Watchers    int
+	Notifiers   int
 	Ledger      *Ledger
 }
 
@@ -49,10 +50,17 @@ func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) erro
 	if err != nil {
 		return err
 	}
+	notifier, err := worker.NewWorker(func(ctx context.Context, _ int) {
+		s.notifierIteration(ctx, step)
+	}, worker.WithInfinityLoop(), worker.WithMaxParallelism(int32(s.Notifiers)))
+	if err != nil {
+		return err
+	}
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() { defer wg.Done(); bidder.Process(ctx) }()
 	go func() { defer wg.Done(); watcher.Process(ctx) }()
+	go func() { defer wg.Done(); notifier.Process(ctx) }()
 	wg.Wait()
 	return nil
 }
@@ -92,6 +100,7 @@ func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep
 		}
 	}
 
+	winners := map[int64]int64{} // auctionID -> winnerID
 	for auctionID, want := range expectedInitialAuctions {
 		// M1: GetAuctionは一過性エラーの影響を減らすため軽いbackoff付きで最大3回試行する。
 		d, err := c.GetAuctionRetry(ctx, auctionID, 3, 100*time.Millisecond)
@@ -109,8 +118,97 @@ func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep
 		if err := ValidateAuctionClosedIfDue(d, time.Now().UTC(), closeGrace); err != nil {
 			step.AddError(failure.NewError(ErrCritical, err))
 		}
+		if d.Status == "closed" && d.WinnerID != nil {
+			winners[auctionID] = *d.WinnerID
+		}
 	}
+	s.validateNotifications(ctx, step, acceptedByAuction, winners)
 	return nil
+}
+
+// notifyExpectation は1ユーザーぶんの通知期待値。
+type notifyExpectation struct {
+	MinOutbid   int64
+	WonAuctions []int64
+}
+
+// validateNotifications は通知の欠落を照合する。
+//   - 各入札ユーザーの outbid 通知数が台帳から導いた下限を下回らないこと
+//   - 落札者に該当オークションの won 通知が届いていること
+//   - 一度も入札していない新規ユーザーの通知が0件であること(他人宛の混入検出)
+//
+// ベンチの入札者はシードユーザーのみなので、user id から seed_user_%02d でログイン名を
+// 逆引きできる(Global Constraints 参照)。
+func (s *Scenario) validateNotifications(ctx context.Context, step *isucandar.BenchmarkStep,
+	acceptedByAuction map[int64][]AcceptedBid, winners map[int64]int64) {
+
+	want := map[int64]*notifyExpectation{}
+	for uid, n := range ExpectedOutbidCounts(acceptedByAuction) {
+		want[uid] = &notifyExpectation{MinOutbid: n}
+	}
+	for auctionID, winnerID := range winners {
+		e, ok := want[winnerID]
+		if !ok {
+			e = &notifyExpectation{}
+			want[winnerID] = e
+		}
+		e.WonAuctions = append(e.WonAuctions, auctionID)
+	}
+
+	for uid, e := range want {
+		if uid < 1 || uid > 20 {
+			// シードユーザー以外はログイン名を逆引きできないため検証対象外
+			continue
+		}
+		uc, err := NewClient(s.Target)
+		if err != nil {
+			step.AddError(failure.NewError(ErrApplication, err))
+			continue
+		}
+		if _, err := uc.Login(ctx, fmt.Sprintf("seed_user_%02d", uid), "password"); err != nil {
+			step.AddError(failure.NewError(ErrApplication, err))
+			continue
+		}
+		ns, err := uc.GetNotifications(ctx)
+		if err != nil {
+			step.AddError(failure.NewError(ErrApplication, err))
+			continue
+		}
+		if err := ValidateNotificationsOrdered(ns); err != nil {
+			step.AddError(failure.NewError(ErrCritical, err))
+		}
+		if got := CountByType(ns, "outbid"); got < e.MinOutbid {
+			step.AddError(failure.NewError(ErrCritical,
+				fmt.Errorf("user %d: outbid通知が %d件 (期待: %d件以上、欠落の疑い)", uid, got, e.MinOutbid)))
+		}
+		for _, auctionID := range e.WonAuctions {
+			if !HasWonNotification(ns, auctionID) {
+				step.AddError(failure.NewError(ErrCritical,
+					fmt.Errorf("user %d: auction %d を落札したのに won通知が無い", uid, auctionID)))
+			}
+		}
+	}
+
+	// 一度も入札していない新規ユーザーの通知は0件でなければならない。
+	// (user_id で絞らず全件返す実装を検出する)
+	fresh, err := NewClient(s.Target)
+	if err != nil {
+		step.AddError(failure.NewError(ErrApplication, err))
+		return
+	}
+	if _, err := fresh.Register(ctx, randomName("bench_notify_"), "benchpassword"); err != nil {
+		step.AddError(failure.NewError(ErrApplication, err))
+		return
+	}
+	ns, err := fresh.GetNotifications(ctx)
+	if err != nil {
+		step.AddError(failure.NewError(ErrApplication, err))
+		return
+	}
+	if len(ns) != 0 {
+		step.AddError(failure.NewError(ErrCritical,
+			fmt.Errorf("入札していない新規ユーザーに通知が %d件 (期待: 0件、他人宛の混入)", len(ns))))
+	}
 }
 
 func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) error {
