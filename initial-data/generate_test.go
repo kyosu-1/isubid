@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"sort"
+	"testing"
+	"time"
+)
 
 func TestGenerateUsers(t *testing.T) {
 	cfg := Scales["small"]
@@ -39,6 +43,138 @@ func TestGenerateIsDeterministic(t *testing.T) {
 	for i := range a.Users {
 		if a.Users[i] != b.Users[i] {
 			t.Fatalf("users[%d] が不一致: %+v vs %+v", i, a.Users[i], b.Users[i])
+		}
+	}
+
+	// Auctions も完全に一致する必要がある
+	if len(a.Auctions) != len(b.Auctions) {
+		t.Fatalf("auctions 件数が不一致: %d vs %d", len(a.Auctions), len(b.Auctions))
+	}
+	for i := range a.Auctions {
+		if a.Auctions[i].ID != b.Auctions[i].ID ||
+			a.Auctions[i].SellerID != b.Auctions[i].SellerID ||
+			a.Auctions[i].CategoryID != b.Auctions[i].CategoryID ||
+			a.Auctions[i].Title != b.Auctions[i].Title ||
+			a.Auctions[i].Description != b.Auctions[i].Description ||
+			a.Auctions[i].StartingPrice != b.Auctions[i].StartingPrice ||
+			!a.Auctions[i].StartsAt.Equal(b.Auctions[i].StartsAt) ||
+			!a.Auctions[i].EndsAt.Equal(b.Auctions[i].EndsAt) ||
+			a.Auctions[i].Status != b.Auctions[i].Status {
+			t.Fatalf("auctions[%d] が不一致: %+v vs %+v", i, a.Auctions[i], b.Auctions[i])
+		}
+		// WinnerID と WinningPrice はポインタなので値を比較する
+		if (a.Auctions[i].WinnerID == nil) != (b.Auctions[i].WinnerID == nil) {
+			t.Fatalf("auctions[%d].WinnerID が不一致: %v vs %v", i, a.Auctions[i].WinnerID, b.Auctions[i].WinnerID)
+		}
+		if a.Auctions[i].WinnerID != nil && *a.Auctions[i].WinnerID != *b.Auctions[i].WinnerID {
+			t.Fatalf("auctions[%d].WinnerID が不一致: %d vs %d", i, *a.Auctions[i].WinnerID, *b.Auctions[i].WinnerID)
+		}
+		if (a.Auctions[i].WinningPrice == nil) != (b.Auctions[i].WinningPrice == nil) {
+			t.Fatalf("auctions[%d].WinningPrice が不一致: %v vs %v", i, a.Auctions[i].WinningPrice, b.Auctions[i].WinningPrice)
+		}
+		if a.Auctions[i].WinningPrice != nil && *a.Auctions[i].WinningPrice != *b.Auctions[i].WinningPrice {
+			t.Fatalf("auctions[%d].WinningPrice が不一致: %d vs %d", i, *a.Auctions[i].WinningPrice, *b.Auctions[i].WinningPrice)
+		}
+	}
+}
+
+// live の ends_at 順が id 順と相関していると、一覧の ORDER BY ends_at ASC を
+// ORDER BY id ASC に書き換える改変を検出できなくなる。Phase 3 が
+// initialAuctionOrder で作った性質を、生成データでも保つ必要がある。
+func TestGeneratedLiveEndsAtNotCorrelatedWithID(t *testing.T) {
+	cfg := Scales["small"]
+	cfg.Seed = DefaultSeed
+	ds := Generate(cfg)
+
+	var live []Auction
+	for _, a := range ds.Auctions {
+		if a.Status == "live" {
+			live = append(live, a)
+		}
+	}
+	if len(live) != cfg.LiveAuctions {
+		t.Fatalf("live = %d件, want %d", len(live), cfg.LiveAuctions)
+	}
+	// live は id 昇順で並んでいる前提。その並びで ends_at が昇順ソート済みなら相関している
+	sorted := sort.SliceIsSorted(live, func(i, j int) bool {
+		return live[i].EndsAt.Before(live[j].EndsAt)
+	})
+	if sorted {
+		t.Error("live の ends_at が id 順と相関している(ORDER BY id ASC を検出できなくなる)")
+	}
+}
+
+// ends_at のオフセットが重複すると一覧の順序が一意に決まらない。
+func TestGeneratedLiveEndsAtAreUnique(t *testing.T) {
+	cfg := Scales["small"]
+	cfg.Seed = DefaultSeed
+	ds := Generate(cfg)
+
+	seen := map[int64]bool{}
+	for _, a := range ds.Auctions {
+		if a.Status != "live" {
+			continue
+		}
+		off := int64(a.EndsAt.Sub(generatedEpoch).Seconds())
+		if seen[off] {
+			t.Fatalf("ends_at オフセット %d が重複している", off)
+		}
+		seen[off] = true
+	}
+}
+
+func TestGeneratedAuctionStatusesAndIDs(t *testing.T) {
+	cfg := Scales["small"]
+	cfg.Seed = DefaultSeed
+	ds := Generate(cfg)
+
+	want := cfg.ClosedAuctions + cfg.LiveAuctions + cfg.UpcomingAuctions
+	if len(ds.Auctions) != want {
+		t.Fatalf("auctions = %d件, want %d", len(ds.Auctions), want)
+	}
+	if ds.Auctions[0].ID != SeedMaxAuctionID+1 {
+		t.Errorf("最初の auction id = %d, want %d", ds.Auctions[0].ID, SeedMaxAuctionID+1)
+	}
+
+	counts := map[string]int{}
+	sellerIDs := map[int64]bool{}
+	for i, a := range ds.Auctions {
+		if a.ID != int64(SeedMaxAuctionID+1+i) {
+			t.Fatalf("auctions[%d].ID = %d, want %d", i, a.ID, SeedMaxAuctionID+1+i)
+		}
+		counts[a.Status]++
+		sellerIDs[a.SellerID] = true
+		if a.StartingPrice < 1 {
+			t.Fatalf("auctions[%d].StartingPrice = %d", i, a.StartingPrice)
+		}
+		if a.CategoryID < 1 || a.CategoryID > 3 {
+			t.Fatalf("auctions[%d].CategoryID = %d (シードのカテゴリは1〜3)", i, a.CategoryID)
+		}
+	}
+	if counts["closed"] != cfg.ClosedAuctions || counts["live"] != cfg.LiveAuctions || counts["upcoming"] != cfg.UpcomingAuctions {
+		t.Errorf("status 内訳 = %+v", counts)
+	}
+	// シードユーザーを出品者にすると GET /stats/me のシード期待値が壊れる
+	for id := range sellerIDs {
+		if id <= SeedMaxUserID {
+			t.Errorf("シードユーザー %d が出品者になっている", id)
+		}
+	}
+}
+
+// closed は過去の絶対時刻。走行時刻に依存しないため initialize で書き換えない。
+func TestGeneratedClosedAuctionsAreInThePast(t *testing.T) {
+	cfg := Scales["small"]
+	cfg.Seed = DefaultSeed
+	ds := Generate(cfg)
+
+	cutoff := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, a := range ds.Auctions {
+		if a.Status != "closed" {
+			continue
+		}
+		if !a.EndsAt.Before(cutoff) {
+			t.Fatalf("closed auction %d の ends_at が %v (期待: %v より前)", a.ID, a.EndsAt, cutoff)
 		}
 	}
 }
