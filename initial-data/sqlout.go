@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 )
 
 // rowsPerStatement は1つの INSERT 文に載せる行数。
@@ -121,5 +120,3 @@ func writeNotifications(w *bufio.Writer, ds *Dataset) error {
 			n.ID, n.UserID, n.Type, n.AuctionID, n.Message, n.CreatedAt.Format(mysqlTimeLayout))
 	})
 }
-
-var _ = time.Time{}
