@@ -27,6 +27,7 @@ func routerFor(h *handler) http.Handler {
 	r.Post("/login", h.postLogin)
 	r.Get("/auctions", h.getAuctions)
 	r.Get("/auctions/{id}", h.getAuction)
+	r.Get("/auctions/{id}/bids", h.getAuctionBids)
 	r.Post("/auctions/{id}/bids", h.postBid)
 	return r
 }
