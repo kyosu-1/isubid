@@ -21,160 +21,138 @@
 - **`applyGeneratedSchedule` の `WHERE id > 12` が必須である**: シードは
   `applyRelativeSchedule` で既に現在時刻基準の絶対時刻になっており、そこへ固定エポック
   起点の変換を当てると `TIMESTAMPDIFF` が約8億3600万秒となり ends_at が2052年へ飛ぶ
+- **`generatedEpoch` は意図的に未来日付(2100-01-01)である**: 過去日付だと、ダンプ投入から
+  `applyGeneratedSchedule` 完了までの窓で `runAuctionCloser` が生成 live を全件期限切れと
+  みなし、`notifications` の採番が進んで明示 id 挿入と衝突する(確率的な初期化失敗)。
+  「整地」して過去日付に戻してはいけない。不変条件テスト
+  `TestGeneratedEpochIsInTheFuture` で守っている。
+- **`applyGeneratedSchedule` は bids → auctions の順を厳守する**: auctions を先に書き換えると
+  最速の生成 live が `base+15秒` で確定し、bids のフルスキャン UPDATE がその15秒以内に
+  終わらない場合に closer が先に closed へ倒す。すると bids UPDATE の
+  `a.status IN ('live','upcoming')` がその入札を黙って飛ばし、入札だけ2100年に取り残される。
+  bids を先に流せば auctions はまだ2100年帯なので closer は構造的に何も拾えない。
+- **`bids.created_at` も auctions と同じシフトが必要**: 詳細 API は
+  `ORDER BY created_at DESC, id DESC` で返し、ベンチはその並びを受理順とみなして
+  金額の単調性を検証する。生成入札の時刻を放置すると走行中の新規入札との順序が壊れる。
+  不変条件テスト `TestGeneratedLiveAuctionBidsEndBeforeEpoch` で「生成 live の最終入札が
+  エポックより前」を守っている(現在の余裕は約35分・最大42入札/オークション)。
 
 ### サイジング実測(2026-08-30)
 
-計測はブランチ `phase-4a-initial-data` の HEAD(`ba0bd20`、`ff773f2` の charset 修正込み)を
-`dev/compose.yaml` で都度ビルドし直した状態で行った。すべて実際に観測した出力からの転記であり、
-未実測の数値は書いていない。
+計測はブランチ `phase-4a-initial-data` の HEAD(`6b8fa8e`)を `dev/compose.yaml` で
+都度ビルドし直した状態で行った。**このタスクは `small` スケールのみを対象とする**
+(`medium`・`full` は別タスクで測る)。
+
+以前(コミット `98f5f24`)に一度計測を行ったが、その結果は全て無効であり本ノートには
+転記していない。理由は次の3つの欠陥を踏んでいたためで、いずれも `98f5f24..6b8fa8e` で
+修正済みである: (1) 生成データのエポックが過去日付だったため `runAuctionCloser` が
+ダンプ投入直後の生成 live を期限切れとみなし `notifications` の採番が明示id挿入と衝突する
+競合(60秒走行7回中3回がPrepare段階で失敗)、(2) bench の Validation が生成オークションを
+追跡しておらず生成 live への入札が全て `想定外のauctionに入札が受理された` critical になる
+不具合(前回は一度も `RESULT: PASS` を観測できなかった)、(3) `applyGeneratedSchedule` が
+`bids.created_at` を書き換えておらずエポック移動後に単調増加違反が56件出ていた不具合。
+今回の計測はこれら3件が解消済みの HEAD で行った、**唯一の有効な計測**である。
 
 | scale | 生成物サイズ | ゲート1 initialize | ゲート2 Prepare | ゲート3 60秒走行 | ゲート4 FOR UPDATE除去 |
 |---|---|---|---|---|---|
-| small | 2.4M合計(users 44K / auctions 192K / bids 1.7M / notifications 562K, snapshot.json 38K) | 0.28〜0.34s、3/3 成功(HTTP 200・notifications件数4000で確認)。15s基準に対して十分な余裕 | 1.50〜1.62s、3連続PASS(6s基準内)。ただし下記ハザードによる非決定的FAILあり | Load フェーズへ到達した4回すべてFAIL。原因はスケールではなく下記「ハザードB」(bench側の既知の検証ギャップ)。単調増加検出とは無関係 | 3回目の試行で検出(`フィードの金額が単調増加でない` / `bids の金額が単調増加違反`, auction 1091)。復元後2回の走行で単調増加系criticalは0件に回帰 |
+| small | 44K(users) + 192K(auctions) + 1.7M(bids) + 562K(notifications) + 38K(snapshot.json) | 3/3 成功(HTTP 200)、0.33〜0.37s。15秒基準に十分な余裕 | 3/3 `PREPARE: PASS`、1.62〜2.63s。6秒基準内 | `RESULT: PASS`、critical 0件、SCORE 6177 | 2回目の試行で検出(`フィードの金額が単調増加でない`/`bids の金額が単調増加違反`, auction 1155)。復元後は `RESULT: PASS` に回帰 |
 
-### 計測中に発見した2つの環境ハザード
+生成コマンドの出力: `scale=small seed=20260830 users=500 auctions=1075 bids=30000 notifications=4000 -> out`
 
-このタスクは計測が目的だったが、実測の過程で `webapp/go` と `bench` それぞれに、生成データ
-導入によって初めて表面化したと見られる問題を発見した。**タスクの制約により `webapp/`・`bench/`
-は一切変更していない**(このコミットは本ファイルのみ)。以下はいずれも実際に踏んだ事象の記録であり、
-next-step の判断材料として残す。
+### 実測ログ
 
-#### ハザードA: `runAuctionCloser` と `applyGeneratedSchedule` の実行順序による初期化レース
-
-`webapp/go/closer.go` の `closerInterval = 1 * time.Second` により、終了処理バッチはアプリ起動中
-常時1秒間隔で動き続けている。一方 `webapp/go/initialize.go` の `postInitialize` は
-`loadViaInitScript`(生成データ含む全ダンプ投入)を完走させてから `applyRelativeSchedule` →
-`applyGeneratedSchedule` の順で時刻を書き換える。生成データの `92_auctions.sql` は
-`status IN ('live','upcoming')` の行を固定エポック(`generatedEpochLiteral = "2000-01-01 00:00:00"`)
-起点の相対時刻のまま投入するため、`92_auctions.sql` 投入直後から `applyGeneratedSchedule` 完了までの
-間、生成 live オークション(small で50件)は closer の `WHERE status='live' AND ends_at <= NOW(6)`
-に恒常的に合致し続ける。この窓(93_bids.sql・94_notifications.sql の投入を含む)にバッチの1秒tickが
-1回でも重なると、closer がその瞬間の live 該当行を**全件まとめて**閉じ、以下のいずれかを引き起こす。
-
-- 対象オークションにまだ bids が投入されていなければ通知は作られず(`sql.ErrNoRows` 分岐)、
-  ステータスだけが無音で closed に変わる
-- 既に bids が投入済みであれば `INSERT INTO notifications` を AUTO_INCREMENT 経由で行い、
-  生成データ側が明示IDで後から同じ範囲に書き込もうとして `Duplicate entry` で衝突し、
-  `POST /initialize` が 500 を返す(このとき `applyRelativeSchedule`/`applyGeneratedSchedule`
-  は未実行のまま初期化が中断され、テーブルは不整合な状態で残る)
-
-再現ログ(コンテナを `docker compose down -v` で完全に作り直した直後、1回目の `/initialize` から発生。
-過去の操作の蓄積は無関係):
+**ゲート1(`POST /initialize` を3回連続)**
 
 ```
-{"error":"init.sh: exit status 1: --------------\nINSERT INTO notifications ...
-ERROR 1062 (23000) at line 1: Duplicate entry '1' for key 'notifications.PRIMARY'\n"}
+=== run 1 ===
+http_code=200
+real 0.37
+=== run 2 ===
+http_code=200
+real 0.36
+=== run 3 ===
+http_code=200
+real 0.33
 ```
 
-直後の確認では `select count(*) from notifications` が `35`(closer が無音で作った分)。
-一方 `HTTP 200` かつ `notifications=4000` が返った回では、生成 live 50件・upcoming 25件・closed 1000件
-が毎回寸分違わず一致しており、成功時のデータは完全に正しいことも確認した(3回連続で確認)。
-つまりこのレースは all-or-nothing で、成功すれば汚染は残らない。
+→ 3回とも HTTP 200、15秒基準に対し十分な余裕。**PASS**。
 
-観測された成功率は、単発の `curl -XPOST /initialize` で概ね 7〜8割、`bench` の `-prepare-only`
-(内部で毎回 `Initialize()` を呼ぶ)でも概ね6〜7割で、単発呼び出しとしては致命的ではない。
-ただし `bench -duration 60s` の Prepare 内 `Initialize()` は独立に同じレースに晒され、
-この計測では素の webapp に対して 60秒走行を試みた7回中3回が Prepare 段階の
-`Duplicate entry` で終了した(Load フェーズに到達したのは残り4回。下表・下記ログの
-「Load フェーズへ到達した4回」はこの4回を指す)。窓の長さは生成データの投入時間に比例するため、
-より大きいスケールほど失敗率が上がる方向に効くと考えられる(未検証の推測)。
-
-回避策: 本タスクでは `webapp/go` を変更できないため、`POST /initialize` が 500 を返した場合は
-その走行を破棄し、成功(HTTP 200 かつ件数一致)を確認してから次の手順に進むことで対処した。
-
-#### ハザードB: bench の Validation フェーズが生成 live オークションを追跡していない
-
-`bench/scenario.go` の `Validation` 関数は、入札を受理してよい「既知の」オークション集合
-(`known`)を `expectedInitialAuctions`(シード id<=10、`bench/validate.go:19` 付近)と
-`s.Ledger.Listings()`(bench 自身が `POST /auctions` で作った出品、`bench/load.go:331` で登録)
-の和集合だけで構成している。生成データの live オークション(id 13以降)はこの `known` に一切
-含まれない。一方 `bench/load.go` の bidder は `GET /auctions` の応答からランダムに入札先を選ぶ
-(`targetID := list[rand.Intn(len(list))].ID`)ため、生成 live オークションへの入札は日常的に
-発生し、201で受理された時点で `s.Ledger` に記録される。Validation はこれを
-`想定外のauctionに入札が受理された` の critical として検出する。
-
-これはスケール固有の問題ではなく、生成データを積んだ状態で `bench` の Validation
-フェーズ(台帳突合、コミット `e11300e`)を60秒走行させた時点で常に顕在化する。実際、
-Load フェーズへ到達した計測は8回すべて(素の webapp 4回・`FOR UPDATE` 除去後2回・
-復元後2回)で `想定外のauctionに入札が受理された` が複数件(2〜37件)発生しており、
-一度も `RESULT: PASS` を観測できなかった。Phase 3 時点(`docs/phase3-notes.md` 参照)は
-生成 live オークションが存在しなかったためこのギャップは表面化していなかったと考えられる。
-
-この事実により、ゲート3(60秒走行 PASS)は現状の `bench` では small を含むどのスケールでも
-達成できない可能性が高い。ゲート4の判定(単調増加検出)には影響しない(下記の実測ログの通り、
-`想定外のauctionに入札が受理された` と単調増加系 critical は独立に発生・消滅している)ため、
-本タスクの主目的(採用スケールの決定)には支障ないと判断したが、`bench/` 側の修正
-(`known` にスナップショットの live auction ID を含める等)は別途フォローアップが必要。
-
-### 実測ログ(抜粋)
-
-**ゲート1(3回、`docker compose up -d --build` 直後)**
+**ゲート2(`-prepare-only` を3回連続)**
 
 ```
-gate1 attempt 1: http=200 elapsed=0.34s notif_count=4000
-gate1 attempt 2: http=200 elapsed=0.32s notif_count=4000
-gate1 attempt 3: http=200 elapsed=0.34s notif_count=4000
+=== run 1 ===
+PREPARE: PASS
+real 2.63
+=== run 2 ===
+PREPARE: PASS
+real 1.86
+=== run 3 ===
+PREPARE: PASS
+real 1.62
 ```
 
-**ゲート2(初期化直後に3連続試行、うち1回は最初の素朴な試行でハザードAにより非決定的FAIL。
-3連続PASSを得るまでの実測をすべて記録)**
+→ 3連続 `PREPARE: PASS`、6秒基準内。**PASS**。
 
-初回(素朴に「ゲート1の直後」に3連続実行。累積経過時間が seed auction 4 の +12秒を
-超えFAIL、レギュレーション文書済みのハザード):
-```
-run 1: PREPARE: FAIL / real 0.71
-run 2: PREPARE: PASS / real 1.59
-run 3: PREPARE: FAIL / real 0.34
-```
-
-初期化直後に取り直した6回中の3連続PASS(ハザードAにより間に2回FAILを挟む):
-```
-attempt 3: PREPARE: PASS / real 1.55
-attempt 4: PREPARE: PASS / real 1.59
-attempt 5: PREPARE: PASS / real 1.50
-```
-
-**ゲート3(素のwebapp、Load フェーズへ到達した4回、すべてFAIL)**
+**ゲート3(60秒走行、通常のwebapp)**
 
 ```
-SCORE: 7361  (raw 7363, penalty 2)   ERRORS: 2件 (critical: 2件)   RESULT: FAIL
-SCORE: 6184  (raw 6209, penalty 25)  ERRORS: 25件 (critical: 25件) RESULT: FAIL
-SCORE: 6655  (raw 6687, penalty 32)  ERRORS: 32件 (critical: 32件) RESULT: FAIL
-SCORE: 6488  (raw 6517, penalty 29)  ERRORS: 29件 (critical: 29件) RESULT: FAIL
-```
-critical は全件 `想定外のauctionに入札が受理された (auction 10xx)` (ハザードB)。
-
-**ゲート4(`FOR UPDATE` 除去、Load フェーズへ到達した回)**
-
-なお、以下の3回の前にもう1回 Load フェーズへ到達した試行があったが、その回は
-`tail -5` で末尾のみ確認し(`ERRORS: 34件 (critical: 34件)` / `RESULT: FAIL`)、
-critical の内訳を記録していない。したがって単調増加系 critical が含まれていたかは
-不明であり、以下の「1回目」「2回目」「3回目」は内訳まで確認できた3回を指す
-(ブリーフの「3回まで」の範囲には収まっている)。
-
-1回目・2回目は検出せず:
-```
-[1回目] ERRORS: 33件 (critical: 33件) — 全件 想定外のauctionに入札が受理された。単調増加違反なし
-[2回目] ERRORS: 39件 (critical: 39件) — 想定外37件 + winner_id不一致1件 + outbid通知欠落1件。単調増加違反なし
+SCORE: 6177  (raw 6177, penalty 0)
+  GET /auctions            : 496回 (496点)
+  GET /auctions/:id        : 496回 (496点)
+  POST /auctions/:id/bids  : 279回 (1395点)
+  GET /auctions/:id/bids   : 279回 (279点)
+  GET /notifications       : 513回 (1026点)
+  POST /auctions           : 497回 (2485点)
+ERRORS: 0件 (critical: 0件)
+RESULT: PASS
 ```
 
-3回目で検出:
+→ `RESULT: PASS`、critical 0件。**PASS**。
+
+**ゲート4(`webapp/go/bids.go` の `postBid` から `SELECT ... FOR UPDATE` の `FOR UPDATE` を
+一時的に除去し、`docker compose -f dev/compose.yaml build app && docker compose -f dev/compose.yaml up -d`
+で再ビルド後に60秒走行。最大3回まで許容)**
+
+1回目(単調増加系criticalは検出せず。ただし `RESULT` 自体は別要因でFAIL):
+
 ```
-ERR: load: critical: auction 1091: フィードの金額が単調増加でない (id=30013(amount=3598) の次に id=30015(amount=3578))
-ERR: load: critical: auction 1091: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=30015(amount=3578) の直後に id=30013(amount=3598) が来ており単調減少でない)
-ERR: validation: critical: auction 1091: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=30015(amount=3578) の直後に id=30013(amount=3598) が来ており単調減少でない)
-SCORE: 6397  (raw 6434, penalty 37)
-ERRORS: 37件 (critical: 37件)
+ERR: validation: critical: auction 1411: closed なのに落札者が未設定 (期待: user=19 price=4714)
+ERR: validation: critical: user 15: outbid通知が 2件 (期待: 3件以上、欠落の疑い)
+SCORE: 6200  (raw 6202, penalty 2)
+ERRORS: 2件 (critical: 2件)
 RESULT: FAIL
 ```
 
-**復元確認(`git checkout webapp/go/bids.go` → rebuild、Load フェーズへ到達した2回)**
+2回目(単調増加系criticalを検出):
 
 ```
-[1回目] SCORE: 6306 (raw 6336, penalty 30) / ERRORS: 30件 / 全件 想定外のauctionに入札が受理された。単調増加系critical 0件
-[2回目] SCORE: 6044 (raw 6071, penalty 27) / ERRORS: 27件 / 全件 想定外のauctionに入札が受理された。単調増加系critical 0件
+ERR: load: critical: auction 1155: フィードの金額が単調増加でない (id=30157(amount=4348) の次に id=30159(amount=4302))
+ERR: validation: critical: auction 1155: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=30159(amount=4302) の直後に id=30157(amount=4348) が来ており単調減少でない)
+ERR: validation: critical: user 20: outbid通知が 2件 (期待: 3件以上、欠落の疑い)
+SCORE: 6273  (raw 6276, penalty 3)
+ERRORS: 3件 (critical: 3件)
+RESULT: FAIL
 ```
 
-`git diff webapp/go/bids.go` は空(`FOR UPDATE` が復元されていることを確認)。
-`RESULT` 自体は上記ハザードBにより両回とも `FAIL` のままだが、ゲート4が検出対象とする
-単調増加系 critical は復元後は0件であり、`FOR UPDATE` の復元が機能していることは確認できた。
+2回目で単調増加系criticalの検出に成功したため、3回目は実施していない。ブリーフの
+「1回目で検出できなければあと2回まで」の範囲内で検出できており、**ゲート4は small スケールで
+PASS**(検出器は生きている)と判定する。
+
+**復元確認(`git checkout webapp/go/bids.go` → `docker compose build app && up -d`)**
+
+`git diff webapp/go/bids.go` は空(`FOR UPDATE` の復元を確認)。再ビルド後のイメージの
+manifest ハッシュは Step 1 で最初にビルドした際のものと一致した(`sha256:7ec60b03...`)。
+
+```
+SCORE: 6251  (raw 6251, penalty 0)
+  GET /auctions            : 497回 (497点)
+  GET /auctions/:id        : 498回 (498点)
+  POST /auctions/:id/bids  : 285回 (1425点)
+  GET /auctions/:id/bids   : 285回 (285点)
+  GET /notifications       : 518回 (1036点)
+  POST /auctions           : 502回 (2510点)
+ERRORS: 0件 (critical: 0件)
+RESULT: PASS
+```
+
+→ 通常走行が `RESULT: PASS` に回帰したことを確認した。
