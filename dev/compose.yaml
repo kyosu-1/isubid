@@ -21,8 +21,10 @@ services:
     environment:
       ISUBID_DB_HOST: mysql
       ISUBID_SQL_DIR: /webapp/sql
+      ISUBID_INITIAL_DATA_DIR: /initial-data
     volumes:
       - ../webapp/sql:/webapp/sql:ro
+      - ../initial-data/out:/initial-data:ro
     depends_on:
       mysql:
         condition: service_healthy
