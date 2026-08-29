@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -116,5 +117,54 @@ func TestPostBidNotLive(t *testing.T) {
 		if res.StatusCode != http.StatusBadRequest {
 			t.Fatalf("auction %s: status = %d, want 400", id, res.StatusCode)
 		}
+	}
+}
+
+// 高値更新のたび、そのオークションに入札済みの全ユーザー(今回の入札者を除く)へ
+// outbid 通知が1行ずつ入る。
+func TestPostBidFansOutOutbidNotifications(t *testing.T) {
+	ts := newTestServer(t)
+	initApp(t, ts)
+	h := newTestHandler(t)
+	ctx := context.Background()
+
+	// auction 1 の既存入札者は user 2, 3, 4 (seed)。user 5 が入札すると 3件入るはず。
+	client := loginSeedUser(t, ts.URL, "seed_user_05")
+	res := postJSON(t, client, ts.URL+"/auctions/1/bids", `{"amount":1600}`)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", res.StatusCode)
+	}
+
+	var n int64
+	if err := h.db.GetContext(ctx, &n,
+		"SELECT COUNT(*) FROM notifications WHERE auction_id = 1 AND type = 'outbid'"); err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Fatalf("outbid 通知が %d件, want 3 (user 2,3,4)", n)
+	}
+	// 入札者自身には飛ばない
+	var self int64
+	if err := h.db.GetContext(ctx, &self,
+		"SELECT COUNT(*) FROM notifications WHERE auction_id = 1 AND user_id = 5"); err != nil {
+		t.Fatal(err)
+	}
+	if self != 0 {
+		t.Errorf("入札者自身に %d件の通知, want 0", self)
+	}
+
+	// 同じ user 5 が再入札すると、今度は user 2,3,4 に加えて…user 5 は除外のまま 3件追加
+	res2 := postJSON(t, client, ts.URL+"/auctions/1/bids", `{"amount":1700}`)
+	defer res2.Body.Close()
+	if res2.StatusCode != http.StatusCreated {
+		t.Fatalf("2回目の status = %d, want 201", res2.StatusCode)
+	}
+	if err := h.db.GetContext(ctx, &n,
+		"SELECT COUNT(*) FROM notifications WHERE auction_id = 1 AND type = 'outbid'"); err != nil {
+		t.Fatal(err)
+	}
+	if n != 6 {
+		t.Fatalf("2回目の入札後 outbid 通知が %d件, want 6", n)
 	}
 }
