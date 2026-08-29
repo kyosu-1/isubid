@@ -594,3 +594,91 @@ func TestValidateAuctionClosedIfDue(t *testing.T) {
 		t.Errorf("closed が拒否された: %v", err)
 	}
 }
+
+// 生成データ搭載時の一覧検証。Phase 3 の完全一致照合(initialAuctionOrder)は
+// live が約260件になると同着やミリ秒のズレで壊れるため、
+// (a) ends_at が非減少 (b) id 昇順にソートされていない の2性質に置き換える。
+func TestValidateAuctionListWithSnapshot(t *testing.T) {
+	base := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	snap := &Snapshot{
+		Counts: SnapshotCounts{LiveAuctions: 3},
+		Auctions: []SnapshotAuction{
+			{ID: 13, Title: "gen A", CategoryID: 1, SellerID: 21, SellerName: "gen_user_00021",
+				StartingPrice: 1000, CurrentPrice: 1000, BidCount: 0, Status: "live", EndsAtOffset: 30},
+			{ID: 14, Title: "gen B", CategoryID: 2, SellerID: 22, SellerName: "gen_user_00022",
+				StartingPrice: 2000, CurrentPrice: 2500, BidCount: 3, Status: "live", EndsAtOffset: 10},
+			{ID: 15, Title: "gen C", CategoryID: 3, SellerID: 23, SellerName: "gen_user_00023",
+				StartingPrice: 3000, CurrentPrice: 3000, BidCount: 0, Status: "live", EndsAtOffset: 50},
+		},
+	}
+	snap.byID = map[int64]*SnapshotAuction{}
+	for i := range snap.Auctions {
+		snap.byID[snap.Auctions[i].ID] = &snap.Auctions[i]
+	}
+
+	gen := func(id int64) AuctionSummary {
+		sa := snap.byID[id]
+		return AuctionSummary{
+			ID: sa.ID, Title: sa.Title, CategoryID: sa.CategoryID,
+			Seller:       User{ID: sa.SellerID, Name: sa.SellerName},
+			CurrentPrice: sa.CurrentPrice, BidCount: sa.BidCount, Status: "live",
+			EndsAt: base.Add(time.Duration(sa.EndsAtOffset) * time.Second),
+		}
+	}
+	seed := func(id int64) AuctionSummary {
+		w := expectedInitialAuctions[id]
+		return AuctionSummary{
+			ID: id, Title: w.Title, CategoryID: w.CategoryID,
+			Seller:       User{ID: w.SellerID, Name: "seed_user_" + pad2(w.SellerID)},
+			CurrentPrice: w.CurrentPrice, BidCount: w.BidCount, Status: "live",
+			EndsAt: base.Add(time.Duration(w.EndsAtOffset) * time.Second),
+		}
+	}
+
+	// ends_at 昇順にマージした正しい一覧を組み立てる。
+	// オフセット: gen14=10, seed4=12, seed2=20, seed8=28, gen13=30, seed6=36,
+	//             seed10=44, gen15=50, seed1=3600, seed3=3660, seed5=3720, seed7=3780, seed9=3840
+	// 合計13件 = シード10件 + 生成3件。
+	build := func() []AuctionSummary {
+		out := []AuctionSummary{gen(14), seed(4), seed(2), seed(8), gen(13), seed(6), seed(10), gen(15)}
+		for _, id := range initialAuctionOrder[5:] { // 3600秒台のシード5件
+			out = append(out, seed(id))
+		}
+		return out
+	}
+
+	if err := ValidateAuctionListWithSnapshot(build(), snap, base); err != nil {
+		t.Fatalf("正しい一覧が拒否された: %v", err)
+	}
+
+	// ends_at が降順に混ざると落ちる
+	bad := build()
+	bad[0], bad[1] = bad[1], bad[0]
+	if err := ValidateAuctionListWithSnapshot(bad, snap, base); err == nil {
+		t.Error("ends_at の順序違反が検出されなかった")
+	}
+
+	// id 昇順にソートすると落ちる(ORDER BY id ASC への書き換え相当)
+	byID := build()
+	sort.Slice(byID, func(i, j int) bool { return byID[i].ID < byID[j].ID })
+	if err := ValidateAuctionListWithSnapshot(byID, snap, base); err == nil {
+		t.Error("id 昇順ソート(ORDER BY id ASC 相当)が検出されなかった")
+	}
+
+	// 件数が合わないと落ちる
+	short := build()[:len(build())-1]
+	if err := ValidateAuctionListWithSnapshot(short, snap, base); err == nil {
+		t.Error("件数不一致が検出されなかった")
+	}
+
+	// 生成オークションのフィールドが改変されると落ちる
+	tampered := build()
+	for i := range tampered {
+		if tampered[i].ID == 14 {
+			tampered[i].CurrentPrice = 9999
+		}
+	}
+	if err := ValidateAuctionListWithSnapshot(tampered, snap, base); err == nil {
+		t.Error("生成オークションの current_price 改変が検出されなかった")
+	}
+}

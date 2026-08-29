@@ -317,8 +317,28 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 	if err != nil {
 		return err
 	}
-	if err := ValidateInitialAuctionList(list, base); err != nil {
-		return err
+	if s.Snapshot != nil {
+		if err := ValidateAuctionListWithSnapshot(list, s.Snapshot, base); err != nil {
+			return err
+		}
+		// 代表サンプルの詳細を照合する(全件は Prepare の時間予算に収まらない)
+		for _, id := range s.Snapshot.SampleAuctionIDs {
+			sa, ok := s.Snapshot.ByID(id)
+			if !ok {
+				return fmt.Errorf("スナップショットの sample_auction_ids に載っている %d が auctions に無い", id)
+			}
+			d, err := c.GetAuction(ctx, id)
+			if err != nil {
+				return err
+			}
+			if err := ValidateSnapshotAuctionDetail(d, sa, base); err != nil {
+				return err
+			}
+		}
+	} else {
+		if err := ValidateInitialAuctionList(list, base); err != nil {
+			return err
+		}
 	}
 
 	// 2b. シード詳細の検証(入札で汚す前に照合する)
