@@ -8,23 +8,131 @@ import (
 )
 
 func seedList() []AuctionSummary {
+	// Independent hand-typed literals to catch drift in expectedInitialAuctions.
+	// Built in ends_at order (initialAuctionOrder) to match real app behavior.
 	base := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
-	list := make([]AuctionSummary, 0, len(initialAuctionOrder))
-	for _, id := range initialAuctionOrder {
-		w := expectedInitialAuctions[id]
-		list = append(list, AuctionSummary{
-			ID:           id,
-			Title:        w.Title,
-			CategoryID:   w.CategoryID,
-			Seller:       User{ID: w.SellerID, Name: "seed_user_" + pad2(w.SellerID)},
-			CurrentPrice: w.CurrentPrice,
-			BidCount:     w.BidCount,
-			EndsAt:       base.Add(time.Duration(w.EndsAtOffset) * time.Second),
+	return []AuctionSummary{
+		// ID 4: ends_at offset 12s
+		{
+			ID:           4,
+			Title:        "メッシュフロー 40",
+			CategoryID:   1,
+			CurrentPrice: 4100,
+			BidCount:     1,
+			Seller:       User{ID: 4, Name: "seed_user_04"},
+			EndsAt:       base.Add(12 * time.Second),
 			Status:       "live",
 			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		})
+		},
+		// ID 2: ends_at offset 20s
+		{
+			ID:           2,
+			Title:        "エルゴホスト Model E",
+			CategoryID:   1,
+			CurrentPrice: 2100,
+			BidCount:     1,
+			Seller:       User{ID: 2, Name: "seed_user_02"},
+			EndsAt:       base.Add(20 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		// ID 8: ends_at offset 28s
+		{
+			ID:           8,
+			Title:        "チャーチチェア 1920",
+			CategoryID:   3,
+			CurrentPrice: 4000,
+			BidCount:     0,
+			Seller:       User{ID: 8, Name: "seed_user_08"},
+			EndsAt:       base.Add(28 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		// ID 6: ends_at offset 36s
+		{
+			ID:           6,
+			Title:        "ネオンストライク Z",
+			CategoryID:   2,
+			CurrentPrice: 3000,
+			BidCount:     0,
+			Seller:       User{ID: 6, Name: "seed_user_06"},
+			EndsAt:       base.Add(36 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		// ID 10: ends_at offset 44s
+		{
+			ID:           10,
+			Title:        "コンパクトワーク 01",
+			CategoryID:   1,
+			CurrentPrice: 5000,
+			BidCount:     0,
+			Seller:       User{ID: 10, Name: "seed_user_10"},
+			EndsAt:       base.Add(44 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		// ID 1: ends_at offset 3600s
+		{
+			ID:           1,
+			Title:        "ヘリテージ・ウィングチェア",
+			CategoryID:   3,
+			CurrentPrice: 1500,
+			BidCount:     3,
+			Seller:       User{ID: 1, Name: "seed_user_01"},
+			EndsAt:       base.Add(3600 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		// ID 3: ends_at offset 3660s
+		{
+			ID:           3,
+			Title:        "ISUレーサー GT",
+			CategoryID:   2,
+			CurrentPrice: 3100,
+			BidCount:     1,
+			Seller:       User{ID: 3, Name: "seed_user_03"},
+			EndsAt:       base.Add(3660 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		// ID 5: ends_at offset 3720s
+		{
+			ID:           5,
+			Title:        "ミッドセンチュリー・ラウンジ",
+			CategoryID:   3,
+			CurrentPrice: 2500,
+			BidCount:     0,
+			Seller:       User{ID: 5, Name: "seed_user_05"},
+			EndsAt:       base.Add(3720 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		// ID 7: ends_at offset 3780s
+		{
+			ID:           7,
+			Title:        "スタンドフレックス",
+			CategoryID:   1,
+			CurrentPrice: 3500,
+			BidCount:     0,
+			Seller:       User{ID: 7, Name: "seed_user_07"},
+			EndsAt:       base.Add(3780 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		// ID 9: ends_at offset 3840s
+		{
+			ID:           9,
+			Title:        "プロシート・エディション",
+			CategoryID:   2,
+			CurrentPrice: 4500,
+			BidCount:     0,
+			Seller:       User{ID: 9, Name: "seed_user_09"},
+			EndsAt:       base.Add(3840 * time.Second),
+			Status:       "live",
+			StartsAt:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
 	}
-	return list
 }
 
 func TestValidateInitialAuctionListOK(t *testing.T) {
