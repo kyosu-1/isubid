@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -94,5 +95,29 @@ func TestInitializeSetsRelativeEndsAt(t *testing.T) {
 		if a.EndsAt.Before(lo.Add(-time.Second)) || a.EndsAt.After(hi.Add(time.Second)) {
 			t.Errorf("auction %d: ends_at = %v, want in [%v, %v]", a.ID, a.EndsAt, lo, hi)
 		}
+	}
+}
+
+// 生成データ非搭載(ISUBID_INITIAL_DATA_DIR 未設定)では、従来どおり
+// スキーマとシードだけが入る。webapp/go のテストはこの経路で走る。
+func TestInitializeWithoutGeneratedData(t *testing.T) {
+	if os.Getenv("ISUBID_INITIAL_DATA_DIR") != "" {
+		t.Skip("生成データ搭載モードではこのテストは対象外")
+	}
+	ts := newTestServer(t)
+	initApp(t, ts)
+
+	res, err := http.Get(ts.URL + "/auctions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var list []auctionSummaryJSON
+	if err := json.NewDecoder(res.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	// シードの live は10件のまま
+	if len(list) != 10 {
+		t.Fatalf("live = %d件, want 10 (生成データが混入している)", len(list))
 	}
 }

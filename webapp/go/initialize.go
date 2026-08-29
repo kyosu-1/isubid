@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -46,28 +48,90 @@ func applyRelativeSchedule(ctx context.Context, db *sqlx.DB, base time.Time) err
 	return nil
 }
 
+// seedMaxAuctionID は webapp/sql/90_seed_phase1.sql が占める auction id の上端。
+// 生成データは id 13 から採番される(initial-data/config.go の SeedMaxAuctionID と揃えること)。
+const seedMaxAuctionID = 12
+
+// generatedEpochLiteral は生成データが live/upcoming の時刻を保持する固定基準。
+// initial-data/generate.go の generatedEpoch と一致させること。
+const generatedEpochLiteral = "2000-01-01 00:00:00"
+
+// applyGeneratedSchedule は生成データの live/upcoming を base 基準の時刻へ付け替える。
+//
+// WHERE id > seedMaxAuctionID が必須である。シード(id 1〜12)は applyRelativeSchedule で
+// 既に「現在時刻＋オフセット」の絶対時刻になっており、ここで固定エポック起点の変換を
+// 当てると TIMESTAMPDIFF が約8億3600万秒となり ends_at が2052年へ飛ぶ。
+//
+// closed は過去データなので書き換えない(走行時刻に依存しない)。
+func applyGeneratedSchedule(ctx context.Context, db *sqlx.DB, base time.Time) error {
+	_, err := db.ExecContext(ctx,
+		"UPDATE auctions SET "+
+			"starts_at = DATE_ADD(?, INTERVAL TIMESTAMPDIFF(SECOND, ?, starts_at) SECOND), "+
+			"ends_at   = DATE_ADD(?, INTERVAL TIMESTAMPDIFF(SECOND, ?, ends_at)   SECOND) "+
+			"WHERE id > ? AND status IN ('live','upcoming')",
+		base, generatedEpochLiteral, base, generatedEpochLiteral, seedMaxAuctionID)
+	return err
+}
+
+// loadViaInitScript は init.sh に投入を委譲する(mysql クライアントでのバルクロード)。
+func loadViaInitScript(ctx context.Context, sqlDir string) error {
+	cmd := exec.CommandContext(ctx, "sh", filepath.Join(sqlDir, "init.sh"))
+	cmd.Env = os.Environ()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("init.sh: %w: %s", err, out)
+	}
+	return nil
+}
+
+// loadViaGo は Go でスキーマとシードだけを流す(生成データ非搭載時)。
+// ホストに mysql クライアントが無い環境でも webapp/go のテストが動くよう、この経路を残す。
+func loadViaGo(ctx context.Context, db *sqlx.DB, sqlDir string) error {
+	for _, f := range initSQLFiles {
+		b, err := os.ReadFile(filepath.Join(sqlDir, f))
+		if err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, string(b)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (h *handler) postInitialize(w http.ResponseWriter, r *http.Request) {
 	sqlDir := getEnv("ISUBID_SQL_DIR", "../sql")
+	generatedDir := os.Getenv("ISUBID_INITIAL_DATA_DIR")
+
 	db, err := sqlx.Open("mysql", dbDSN(true))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	defer db.Close()
-	for _, f := range initSQLFiles {
-		b, err := os.ReadFile(filepath.Join(sqlDir, f))
-		if err != nil {
+
+	if generatedDir != "" {
+		if err := loadViaInitScript(r.Context(), sqlDir); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if _, err := db.ExecContext(r.Context(), string(b)); err != nil {
+	} else {
+		if err := loadViaGo(r.Context(), db, sqlDir); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
-	if err := applyRelativeSchedule(r.Context(), db, time.Now().UTC()); err != nil {
+
+	base := time.Now().UTC()
+	if err := applyRelativeSchedule(r.Context(), db, base); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if generatedDir != "" {
+		if err := applyGeneratedSchedule(r.Context(), db, base); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"lang": "go"})
 }
