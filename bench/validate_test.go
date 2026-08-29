@@ -521,3 +521,38 @@ func TestValidateInitialAuctionListRelativeEndsAt(t *testing.T) {
 		t.Error("ORDER BY id ASC 相当の並びが検出されなかった")
 	}
 }
+
+// ends_at を過ぎたオークションは closed になっていなければならない
+// (終了処理バッチが止まっていることの検出)。
+func TestValidateAuctionClosedIfDue(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	grace := 5 * time.Second
+
+	// 期限を大きく過ぎているのに live → 違反
+	overdue := &AuctionDetail{AuctionSummary: AuctionSummary{
+		ID: 1, Status: "live", EndsAt: now.Add(-30 * time.Second)}}
+	if err := ValidateAuctionClosedIfDue(overdue, now, grace); err == nil {
+		t.Error("期限切れ live が検出されなかった")
+	}
+
+	// 期限直後(猶予の内側)は許容
+	justEnded := &AuctionDetail{AuctionSummary: AuctionSummary{
+		ID: 1, Status: "live", EndsAt: now.Add(-2 * time.Second)}}
+	if err := ValidateAuctionClosedIfDue(justEnded, now, grace); err != nil {
+		t.Errorf("猶予内の live が拒否された: %v", err)
+	}
+
+	// 期限前の live は当然OK
+	future := &AuctionDetail{AuctionSummary: AuctionSummary{
+		ID: 1, Status: "live", EndsAt: now.Add(time.Hour)}}
+	if err := ValidateAuctionClosedIfDue(future, now, grace); err != nil {
+		t.Errorf("期限前の live が拒否された: %v", err)
+	}
+
+	// closed ならいつでもOK
+	closed := &AuctionDetail{AuctionSummary: AuctionSummary{
+		ID: 1, Status: "closed", EndsAt: now.Add(-30 * time.Second)}}
+	if err := ValidateAuctionClosedIfDue(closed, now, grace); err != nil {
+		t.Errorf("closed が拒否された: %v", err)
+	}
+}

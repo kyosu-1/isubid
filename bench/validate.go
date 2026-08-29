@@ -191,3 +191,21 @@ func ValidateBidReflected(d *AuctionDetail, bid *BidCreated) error {
 	}
 	return fmt.Errorf("auction %d: 入札 id=%d が bids に見つからない", d.ID, bid.ID)
 }
+
+// closeGrace は終了処理の猶予。バッチは1秒間隔で回るため、ends_at 直後の短い
+// あいだ live のままなのは正常。ベンチとアプリは同一ホストで動く前提で、
+// 時計ずれは考慮しない。
+const closeGrace = 5 * time.Second
+
+// ValidateAuctionClosedIfDue は ends_at を過ぎたオークションが closed に
+// なっていることを検証する。終了処理バッチが動いていないことを検出する。
+func ValidateAuctionClosedIfDue(d *AuctionDetail, now time.Time, grace time.Duration) error {
+	if d.Status == "closed" {
+		return nil
+	}
+	if d.EndsAt.Add(grace).Before(now) {
+		return fmt.Errorf("auction %d: ends_at (%s) を過ぎているのに status が %q (期待: closed)",
+			d.ID, d.EndsAt.Format(time.RFC3339), d.Status)
+	}
+	return nil
+}

@@ -103,6 +103,12 @@ func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep
 			acceptedByAuction[auctionID], pendingByAuction[auctionID]) {
 			step.AddError(failure.NewError(ErrCritical, e))
 		}
+		for _, e := range reconcileClosedAuction(auctionID, d) {
+			step.AddError(failure.NewError(ErrCritical, e))
+		}
+		if err := ValidateAuctionClosedIfDue(d, time.Now().UTC(), closeGrace); err != nil {
+			step.AddError(failure.NewError(ErrCritical, err))
+		}
 	}
 	return nil
 }
