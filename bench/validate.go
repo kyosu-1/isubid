@@ -162,6 +162,13 @@ func ValidateAuctionListWithSnapshot(list []AuctionSummary, snap *Snapshot, base
 // webapp/go/initialize.go の同名定数と揃えること。
 const seedMaxAuctionID = 12
 
+// seedMaxBidID は webapp/sql/90_seed_phase1.sql が占める bid id の上端。
+// initial-data/config.go の SeedMaxBidID と揃えること。reconcileAuction の
+// preexistingMaxBidID として、シードauctionとベンチ出品のlistingの両方に渡す
+// (どちらも走行開始前の入札はシードの8件しか持ち得ない)。生成auctionでは
+// seedMaxBidID + snapshot.Counts.Bids を渡す(bench/scenario.go Validation参照)。
+const seedMaxBidID = 8
+
 func checkListRow(a AuctionSummary, title string, categoryID, sellerID int64,
 	sellerName string, currentPrice, bidCount int64, wantEndsAt time.Time) error {
 	if a.Title != title {

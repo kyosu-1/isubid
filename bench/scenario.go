@@ -98,18 +98,21 @@ func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) erro
 
 // Validation はLoad終了後に台帳と実データを突合する。
 // ベンチ以外に入札者はいないため、各オークションの期待状態は理論上
-// 「シード入札(id<=8) ∪ 台帳が確定受理した入札 ∪ 結果不明のまま残ったpending」で決まる
-// (reconcileAuction参照)。201の応答を受け取れないままctxキャンセル/転送エラーになった
-// 入札は、サーバー側では既にコミットされている可能性があるため、pendingとして
-// 突き合わせに使うことでfalse-FAILを避ける(C1)。
+// 「走行開始前から存在する入札(preexistingMaxBidID以下) ∪ 台帳が確定受理した入札 ∪
+// 結果不明のまま残ったpending」で決まる(reconcileAuction参照)。201の応答を受け取れない
+// ままctxキャンセル/転送エラーになった入札は、サーバー側では既にコミットされている
+// 可能性があるため、pendingとして突き合わせに使うことでfalse-FAILを避ける(C1)。
 //
 // 想定していないauctionへの記録は、通常は即critical。ただし出品(POST /auctions)の応答が
 // 受け取れず結果不明の出品(unknownListings > 0)が1件でもある走行に限り、その出品が
 // Listingを作れず「想定外」と誤検知されている可能性があるため、この走行全体で
 // application へ格下げする(詳細は unknownListings を使っている箇所のコメント参照)。
 // 検査対象は id<=10 の初期シードauction全件(Loadでベンチが一度も触れなかったauctionでも、
-// シード入札が消えていないかは検証したいため)に加え、ベンチが Load 中に出品した
-// listing(s.Ledger.Listings())全件も同様に突合する。
+// 既存入札が消えていないかは検証したいため)に加え、ベンチが Load 中に出品した
+// listing(s.Ledger.Listings())全件、さらに(生成データ搭載時は)台帳が実際に入札を
+// 持っている生成auctionも同様に突合する。生成auctionは一覧の大半を占めるため、
+// スナップショットのauction一覧をknownに含めないと入札のたびに「想定外のauction」
+// criticalになってしまう。
 func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep) error {
 	if s.PrepareOnly {
 		return nil
@@ -123,10 +126,15 @@ func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep
 	pendingByAuction := s.Ledger.PendingByAuction()
 	listings := s.Ledger.Listings()
 
-	// ベンチが知っているオークション = 初期データ ∪ ベンチが出品したもの
+	// ベンチが知っているオークション = 初期データ(シード ∪ 生成) ∪ ベンチが出品したもの
 	known := map[int64]bool{}
 	for id := range expectedInitialAuctions {
 		known[id] = true
+	}
+	if s.Snapshot != nil {
+		for _, a := range s.Snapshot.Auctions {
+			known[a.ID] = true
+		}
 	}
 	for _, li := range listings {
 		known[li.AuctionID] = true
@@ -170,7 +178,7 @@ func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep
 			step.AddError(failure.NewError(ErrCritical, fmt.Errorf("auction %d: %w", auctionID, err)))
 			continue
 		}
-		for _, e := range reconcileAuction(auctionID, d, want.BidCount, want.CurrentPrice,
+		for _, e := range reconcileAuction(auctionID, d, want.BidCount, want.CurrentPrice, seedMaxBidID,
 			acceptedByAuction[auctionID], pendingByAuction[auctionID]) {
 			step.AddError(failure.NewError(ErrCritical, e))
 		}
@@ -190,7 +198,7 @@ func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep
 			step.AddError(failure.NewError(ErrCritical, fmt.Errorf("auction %d: %w", li.AuctionID, err)))
 			continue
 		}
-		for _, e := range reconcileAuction(li.AuctionID, d, 0, li.StartingPrice,
+		for _, e := range reconcileAuction(li.AuctionID, d, 0, li.StartingPrice, seedMaxBidID,
 			acceptedByAuction[li.AuctionID], pendingByAuction[li.AuctionID]) {
 			step.AddError(failure.NewError(ErrCritical, e))
 		}
@@ -203,6 +211,50 @@ func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep
 		}
 		if d.Status == "closed" && d.WinnerID != nil {
 			winners[li.AuctionID] = *d.WinnerID
+		}
+	}
+	// 生成auction(id>=13)のうち、台帳が実際に入札(accepted/pending)を持つものだけを
+	// 突合する。触れていない生成auctionまで全件フェッチすると(小規模でも数十〜数百件)
+	// シグナルの無いHTTPが増えるだけなので、対象は台帳に載っているidに限定する。
+	// ベースラインはスナップショットのBidCount/CurrentPrice(走行開始前の状態)。これは
+	// expectedInitialAuctionsがシードauctionに、Listing.StartingPriceがベンチ出品に
+	// 対して果たすのと同じ役割。
+	//
+	// bid idは全auction共通の連番なので、走行開始前から存在する入札の境界はauction単位
+	// ではなく、生成bid件数(snapshot.Counts.Bids)から一意に決まる: 生成bidは
+	// SeedMaxBidID+1から連番で採番されるため、境界は seedMaxBidID + Counts.Bids
+	// (initial-data/generate.go 参照)。
+	if s.Snapshot != nil {
+		preexistingMaxBidID := seedMaxBidID + s.Snapshot.Counts.Bids
+		touchedGenerated := map[int64]bool{}
+		for auctionID := range acceptedByAuction {
+			touchedGenerated[auctionID] = true
+		}
+		for auctionID := range pendingByAuction {
+			touchedGenerated[auctionID] = true
+		}
+		for id := range expectedInitialAuctions {
+			delete(touchedGenerated, id)
+		}
+		for _, li := range listings {
+			delete(touchedGenerated, li.AuctionID)
+		}
+		for auctionID := range touchedGenerated {
+			sa, ok := s.Snapshot.ByID(auctionID)
+			if !ok {
+				// known(スナップショットのauction一覧)にも無いidはここまで来ず、
+				// 上の「想定外のauction」検知が既に拾っている。
+				continue
+			}
+			d, err := c.GetAuctionRetry(ctx, auctionID, 3, 100*time.Millisecond)
+			if err != nil {
+				step.AddError(failure.NewError(ErrCritical, fmt.Errorf("auction %d: %w", auctionID, err)))
+				continue
+			}
+			for _, e := range reconcileAuction(auctionID, d, sa.BidCount, sa.CurrentPrice, preexistingMaxBidID,
+				acceptedByAuction[auctionID], pendingByAuction[auctionID]) {
+				step.AddError(failure.NewError(ErrCritical, e))
+			}
 		}
 	}
 	s.validateNotifications(ctx, step, acceptedByAuction, winners)
