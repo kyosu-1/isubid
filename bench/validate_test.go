@@ -596,8 +596,11 @@ func TestValidateAuctionClosedIfDue(t *testing.T) {
 }
 
 // 生成データ搭載時の一覧検証。Phase 3 の完全一致照合(initialAuctionOrder)は
-// live が約260件になると同着やミリ秒のズレで壊れるため、
-// (a) ends_at が非減少 (b) id 昇順にソートされていない の2性質に置き換える。
+// live が約260件になると同着やミリ秒のズレで壊れるため、ends_at が非減少で
+// あることの1性質に置き換える。シード・生成データとも ends_at 順は id 順と
+// 相関しないよう作られているため(生成側は TestGeneratedLiveEndsAtNotCorrelatedWithID
+// が保証)、ORDER BY ends_at ASC を ORDER BY id ASC に書き換える改変はこの
+// 1性質だけで検出できる。
 func TestValidateAuctionListWithSnapshot(t *testing.T) {
 	base := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	snap := &Snapshot{
@@ -658,7 +661,8 @@ func TestValidateAuctionListWithSnapshot(t *testing.T) {
 		t.Error("ends_at の順序違反が検出されなかった")
 	}
 
-	// id 昇順にソートすると落ちる(ORDER BY id ASC への書き換え相当)
+	// id 昇順にソートされた一覧(ORDER BY id ASC への書き換え相当)は
+	// ends_at 非減少性に違反するため拒否される
 	byID := build()
 	sort.Slice(byID, func(i, j int) bool { return byID[i].ID < byID[j].ID })
 	if err := ValidateAuctionListWithSnapshot(byID, snap, base); err == nil {
@@ -680,5 +684,90 @@ func TestValidateAuctionListWithSnapshot(t *testing.T) {
 	}
 	if err := ValidateAuctionListWithSnapshot(tampered, snap, base); err == nil {
 		t.Error("生成オークションの current_price 改変が検出されなかった")
+	}
+}
+
+// snapshotDetailFixture は SnapshotAuction が正しく反映された AuctionDetail を組み立てる。
+// 個々のテストはここから1フィールドだけ改変して検証する。
+func snapshotDetailFixture(sa *SnapshotAuction, base time.Time, bids []Bid) *AuctionDetail {
+	return &AuctionDetail{
+		AuctionSummary: AuctionSummary{
+			ID:           sa.ID,
+			Title:        sa.Title,
+			CategoryID:   sa.CategoryID,
+			Seller:       User{ID: sa.SellerID, Name: sa.SellerName},
+			CurrentPrice: sa.CurrentPrice,
+			BidCount:     sa.BidCount,
+			EndsAt:       base.Add(time.Duration(sa.EndsAtOffset) * time.Second),
+			Status:       sa.Status,
+		},
+		StartingPrice: sa.StartingPrice,
+		WinnerID:      sa.WinnerID,
+		WinningPrice:  sa.WinningPrice,
+		Bids:          bids,
+	}
+}
+
+// closed オークションのサンプルは live 一覧に現れないため、この関数がその唯一の
+// 検証機会になる。category_id・seller・ends_at・winner系のnull不一致を
+// 落とすと closed の改変が一切検出できなくなるため、それぞれを個別に確認する。
+func TestValidateSnapshotAuctionDetail(t *testing.T) {
+	base := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+
+	liveSA := &SnapshotAuction{
+		ID: 20, Title: "gen live", CategoryID: 2, SellerID: 30, SellerName: "gen_user_00030",
+		StartingPrice: 1000, CurrentPrice: 1500, BidCount: 1, Status: "live", EndsAtOffset: 100,
+	}
+	liveBids := []Bid{{ID: 1, User: User{ID: 5, Name: "gen_user_00005"}, Amount: 1500, CreatedAt: base}}
+
+	// 正しい詳細は通る
+	ok := snapshotDetailFixture(liveSA, base, liveBids)
+	if err := ValidateSnapshotAuctionDetail(ok, liveSA, base); err != nil {
+		t.Errorf("正しい詳細が拒否された: %v", err)
+	}
+
+	// category_id の改変は落ちる
+	wrongCategory := snapshotDetailFixture(liveSA, base, liveBids)
+	wrongCategory.CategoryID = 99
+	if err := ValidateSnapshotAuctionDetail(wrongCategory, liveSA, base); err == nil || !strings.Contains(err.Error(), "category_id") {
+		t.Errorf("category_id の改変が検出されなかった: %v", err)
+	}
+
+	// seller の改変は落ちる
+	wrongSeller := snapshotDetailFixture(liveSA, base, liveBids)
+	wrongSeller.Seller.Name = "hacker"
+	if err := ValidateSnapshotAuctionDetail(wrongSeller, liveSA, base); err == nil || !strings.Contains(err.Error(), "seller") {
+		t.Errorf("seller の改変が検出されなかった: %v", err)
+	}
+
+	// live オークションの ends_at が許容幅を超えてずれると落ちる
+	wrongEndsAt := snapshotDetailFixture(liveSA, base, liveBids)
+	wrongEndsAt.EndsAt = wrongEndsAt.EndsAt.Add(30 * time.Second)
+	if err := ValidateSnapshotAuctionDetail(wrongEndsAt, liveSA, base); err == nil || !strings.Contains(err.Error(), "ends_at") {
+		t.Errorf("ends_at の許容幅外ズレが検出されなかった: %v", err)
+	}
+
+	// closed: winning_price が期待どおりにあるスナップショットに対し、
+	// 応答側が null を返すと落ちる(winner_id と非対称にしない)
+	winnerID := int64(7)
+	winningPrice := int64(5000)
+	closedSA := &SnapshotAuction{
+		ID: 21, Title: "gen closed", CategoryID: 1, SellerID: 31, SellerName: "gen_user_00031",
+		StartingPrice: 2000, CurrentPrice: 5000, BidCount: 2, Status: "closed", EndsAtOffset: 0,
+		WinnerID: &winnerID, WinningPrice: &winningPrice,
+	}
+	closedBids := []Bid{
+		{ID: 2, User: User{ID: winnerID, Name: "gen_user_00007"}, Amount: winningPrice, CreatedAt: base},
+		{ID: 1, User: User{ID: 8, Name: "gen_user_00008"}, Amount: 4500, CreatedAt: base.Add(-time.Hour)},
+	}
+	closedOK := snapshotDetailFixture(closedSA, base, closedBids)
+	if err := ValidateSnapshotAuctionDetail(closedOK, closedSA, base); err != nil {
+		t.Errorf("正しいclosed詳細が拒否された: %v", err)
+	}
+
+	closedNullPrice := snapshotDetailFixture(closedSA, base, closedBids)
+	closedNullPrice.WinningPrice = nil
+	if err := ValidateSnapshotAuctionDetail(closedNullPrice, closedSA, base); err == nil || !strings.Contains(err.Error(), "winning_price") {
+		t.Errorf("winning_price の null 化が検出されなかった: %v", err)
 	}
 }
