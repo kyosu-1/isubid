@@ -27,6 +27,7 @@ type Scenario struct {
 	Listings    *pubsub.PubSub
 	Board       *listingBoard
 	Ledger      *Ledger
+	Snapshot    *Snapshot
 }
 
 // newListingPubSub は出品配信用の PubSub を作る。
