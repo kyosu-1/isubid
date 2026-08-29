@@ -5,28 +5,38 @@ import (
 	"time"
 )
 
-// expectedAuction は webapp/sql/90_seed_phase1.sql と一致させること(あちらが正)。
+// expectedAuction は webapp/sql/90_seed_phase1.sql と
+// webapp/go/initialize.go の auctionEndOffsets に一致させること(あちらが正)。
 type expectedAuction struct {
 	Title        string
 	CurrentPrice int64
 	BidCount     int64
 	SellerID     int64
 	CategoryID   int64
-	EndsAtHour   int // ends_at = 2030-01-01 <hour>:00:00 UTC(シードの階段配置)
+	EndsAtOffset int // ends_at = initialize時刻 + このオフセット(秒)
 }
 
 var expectedInitialAuctions = map[int64]expectedAuction{
-	1:  {"ヘリテージ・ウィングチェア", 1500, 3, 1, 3, 1},
-	2:  {"エルゴホスト Model E", 2100, 1, 2, 1, 2},
-	3:  {"ISUレーサー GT", 3100, 1, 3, 2, 3},
-	4:  {"メッシュフロー 40", 4100, 1, 4, 1, 4},
-	5:  {"ミッドセンチュリー・ラウンジ", 2500, 0, 5, 3, 5},
-	6:  {"ネオンストライク Z", 3000, 0, 6, 2, 6},
-	7:  {"スタンドフレックス", 3500, 0, 7, 1, 7},
-	8:  {"チャーチチェア 1920", 4000, 0, 8, 3, 8},
-	9:  {"プロシート・エディション", 4500, 0, 9, 2, 9},
-	10: {"コンパクトワーク 01", 5000, 0, 10, 1, 10},
+	1:  {"ヘリテージ・ウィングチェア", 1500, 3, 1, 3, 3600},
+	2:  {"エルゴホスト Model E", 2100, 1, 2, 1, 20},
+	3:  {"ISUレーサー GT", 3100, 1, 3, 2, 3660},
+	4:  {"メッシュフロー 40", 4100, 1, 4, 1, 12},
+	5:  {"ミッドセンチュリー・ラウンジ", 2500, 0, 5, 3, 3720},
+	6:  {"ネオンストライク Z", 3000, 0, 6, 2, 36},
+	7:  {"スタンドフレックス", 3500, 0, 7, 1, 3780},
+	8:  {"チャーチチェア 1920", 4000, 0, 8, 3, 28},
+	9:  {"プロシート・エディション", 4500, 0, 9, 2, 3840},
+	10: {"コンパクトワーク 01", 5000, 0, 10, 1, 44},
 }
+
+// initialAuctionOrder は ends_at 昇順に並べた期待 id 列。id 昇順と一致しないことが重要
+// (一致していると ORDER BY id ASC への書き換えを検出できない)。
+var initialAuctionOrder = []int64{4, 2, 8, 6, 10, 1, 3, 5, 7, 9}
+
+// endsAtTolerance は ends_at 照合の許容幅。ベンチが initialize の応答を受け取った時刻を
+// base とするが、アプリが基準時刻を採ったのはその少し前なので、初期化処理の所要時間ぶんの
+// ずれを吸収する(Phase 2b-1 時点の Prepare 実測は 0.6〜1.2 秒)。
+const endsAtTolerance = 5 * time.Second
 
 type expectedBid struct {
 	Amount   int64
@@ -45,24 +55,23 @@ func pad2(n int64) string {
 	return fmt.Sprintf("%02d", n)
 }
 
-func ValidateInitialAuctionList(list []AuctionSummary) error {
+func ValidateInitialAuctionList(list []AuctionSummary, base time.Time) error {
 	if len(list) != len(expectedInitialAuctions) {
 		return fmt.Errorf("GET /auctions: 件数が %d (期待: %d)", len(list), len(expectedInitialAuctions))
 	}
 	var prevEndsAt time.Time
 	for i, a := range list {
-		// シードは id昇順 = ends_at昇順 の階段配置
-		if a.ID != int64(i+1) {
-			return fmt.Errorf("GET /auctions: %d番目が id=%d (期待: id=%d / ends_at ASC順)", i, a.ID, i+1)
+		if a.ID != initialAuctionOrder[i] {
+			return fmt.Errorf("GET /auctions: %d番目が id=%d (期待: id=%d / ends_at ASC順)", i, a.ID, initialAuctionOrder[i])
 		}
 		if a.EndsAt.Before(prevEndsAt) {
 			return fmt.Errorf("GET /auctions: ends_at が昇順でない (id=%d)", a.ID)
 		}
 		prevEndsAt = a.EndsAt
 		want := expectedInitialAuctions[a.ID]
-		// ends_at の絶対値照合(2030-01-01 0N:00:00 UTC)
-		if wantEndsAt := time.Date(2030, 1, 1, want.EndsAtHour, 0, 0, 0, time.UTC); !a.EndsAt.Equal(wantEndsAt) {
-			return fmt.Errorf("auction %d: ends_at が %v (期待: %v)", a.ID, a.EndsAt, wantEndsAt)
+		wantEndsAt := base.Add(time.Duration(want.EndsAtOffset) * time.Second)
+		if d := a.EndsAt.Sub(wantEndsAt); d > endsAtTolerance || d < -endsAtTolerance {
+			return fmt.Errorf("auction %d: ends_at が %v (期待: %v ± %v)", a.ID, a.EndsAt, wantEndsAt, endsAtTolerance)
 		}
 		if a.Status != "live" {
 			return fmt.Errorf("auction %d: status が %q (期待: live)", a.ID, a.Status)

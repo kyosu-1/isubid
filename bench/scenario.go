@@ -118,6 +118,9 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 	if err != nil {
 		return err
 	}
+	// アプリが基準時刻を採ったのは応答を受け取る直前。ここを base とし、
+	// 初期化処理の所要時間ぶんのずれは endsAtTolerance が吸収する。
+	base := time.Now().UTC()
 	if lang == "" {
 		return fmt.Errorf("POST /initialize: lang が空")
 	}
@@ -127,7 +130,7 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 	if err != nil {
 		return err
 	}
-	if err := ValidateInitialAuctionList(list); err != nil {
+	if err := ValidateInitialAuctionList(list, base); err != nil {
 		return err
 	}
 
