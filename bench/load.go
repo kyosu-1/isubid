@@ -51,13 +51,18 @@ func (s *Scenario) awaitFeedReflection(ctx context.Context, step *isucandar.Benc
 			addErr(ctx, step, ErrApplication, err)
 			return
 		}
-		step.AddScore(ScoreGETFeed)
+		// 検証は毎ポーリング実行する(フィードの不変条件はポーリング回数に関わらず常に成立すべき)。
 		if err := ValidateFeedPage(feed, since); err != nil {
 			addErr(ctx, step, ErrCritical, fmt.Errorf("auction %d: %w", auctionID, err))
 			return
 		}
 		for _, b := range feed {
 			if b.ID == bidID {
+				// I2: 加点は「反映を確認できた」ことに対して1回だけ行う。ポーリングのたびに
+				// 加点すると、フィード反映が遅い(=デッドラインぎりぎりまでポーリングを重ねる)
+				// 実装ほど GETFeed 点が積み上がり、2秒デッドラインが罰するはずの鮮度劣化を
+				// 逆に加点してしまう(ポーリング間引きへのインセンティブを生む)。
+				step.AddScore(ScoreGETFeed)
 				return // 反映を確認できた
 			}
 		}
@@ -296,16 +301,24 @@ func (s *Scenario) sellerIteration(ctx context.Context, step *isucandar.Benchmar
 	title := sellerTitles[rand.Intn(len(sellerTitles))]
 	startingPrice := int64(1000 + rand.Intn(9)*500)
 	duration := int64(20 + rand.Intn(21)) // 20〜40秒
-	created, err := c.PostAuction(ctx, title, "ベンチが出品した椅子",
+	created, code, err := c.PostAuction(ctx, title, "ベンチが出品した椅子",
 		int64(1+rand.Intn(3)), startingPrice, duration)
 	if err != nil {
-		// 応答を受け取れなかっただけで、サーバー側では既にコミットされている可能性がある
-		// (in-flight commit)。この場合ベンチ側はauction IDを知り得ずListingを作れないため、
-		// Validationが「想定外のauction」と誤検知(false-FAIL)しうる。bidのIntent/Pending
-		// (C1)と対称な仕組みは作れない(先行して仮IDを発番できない)ため、件数だけを記録し
-		// Validation側で許容判定の材料にする。
+		// 結果不明(転送エラー/5xx/ctxキャンセル): 応答を受け取れなかっただけで、サーバー側では
+		// 既にコミットされている可能性がある(in-flight commit)。この場合ベンチ側はauction ID
+		// を知り得ずListingを作れないため、Validationが「想定外のauction」と誤検知(false-FAIL)
+		// しうる。bidのIntent/Pending(C1)と対称な仕組みは作れない(先行して仮IDを発番できない)
+		// ため、件数だけを記録しValidation側で許容判定の材料にする。
 		s.Ledger.RecordUnknownListing()
 		addErr(ctx, step, ErrApplication, err)
+		return
+	}
+	if code != 201 {
+		// 確定的な4xx(400/401等): 未コミットが確定している(bidのRejectに相当)。
+		// RecordUnknownListingを増やすと、この走行全体でValidationの「想定外のauction」検知が
+		// criticalからapplicationへ不必要に格下げされてしまうため、増やさない。
+		addErr(ctx, step, ErrApplication,
+			fmt.Errorf("POST /auctions: 予期しない status %d", code))
 		return
 	}
 	step.AddScore(ScorePOSTAuction)

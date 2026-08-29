@@ -195,7 +195,29 @@ func ValidateBidReflected(d *AuctionDetail, bid *BidCreated) error {
 // closeGrace は終了処理の猶予。バッチは1秒間隔で回るため、ends_at 直後の短い
 // あいだ live のままなのは正常。ベンチとアプリは同一ホストで動く前提で、
 // 時計ずれは考慮しない。
+//
+// これは初期シードauction(expectedInitialAuctions, id<=10)向け。Validation実行時点で
+// これらは(duration設定上)既に18〜50秒ends_atを過ぎており、closerが正常なら猶予5秒の
+// 中で確実にclosed化が終わっているはずなので厳しい値のままでよい。ベンチがLoad中に
+// 出品したlisting向けには猶予が薄すぎる(listingCloseGrace参照)ため、別定数を使う。
 const closeGrace = 5 * time.Second
+
+// listingCloseGrace はベンチが Load 中に作成した出品(sellerIteration)向けの猶予。
+//
+// 出品の duration は20〜40秒で、Validation は Load 終了直後に始まる。つまり Validation
+// 開始時刻は「直前の20〜40秒間に作られた出品が続々と ends_at を迎える」タイミングに
+// ちょうど重なり、closeDueAuctions のバックログが1本の走行の中で最も積み上がる瞬間である。
+// closeDueAuctions は該当行を1件ずつ逐次トランザクション処理し、しかも bids/auctions には
+// (意図的に)status/ends_at や auction_id のインデックスが無く、HTTPハンドラと共有する
+// 10コネクションのプールを取り合う。したがってこの波を捌き切るのに、seed auction 側で
+// 想定している5秒の猶予より数秒〜十数秒余計にかかってもおかしくない。closeGrace のまま
+// listing にも適用すると、ベンチ自身が作った出品ラッシュに起因する遅延を受験者の
+// 不具合と誤って critical にしてしまう(false-FAIL)。
+//
+// 30秒は、このバックログの波(同時に期限を迎える出品はどれだけ多くても走行スケールの
+// 出品ワーカー数に比例した程度で、逐次処理でも十分に秒〜十数秒オーダーで捌ける規模)を
+// 余裕を持って吸収しつつ、closer が本当に止まっているケースを見逃さない値として選んでいる。
+const listingCloseGrace = 30 * time.Second
 
 // ValidateAuctionClosedIfDue は ends_at を過ぎたオークションが closed に
 // なっていることを検証する。終了処理バッチが動いていないことを検出する。

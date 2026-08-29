@@ -45,8 +45,9 @@ func randomName(prefix string) string {
 	return prefix + hex.EncodeToString(b)
 }
 
-// Load は入札者(bidderIteration)とウォッチャー(watcherIteration)の2種の
-// worker を無限ループで並行実行し、ctx(WithLoadTimeout)がキャンセルされるまで走らせる。
+// Load は入札者(bidderIteration)・ウォッチャー(watcherIteration)・
+// 通知閲覧者(notifierIteration)・出品者(sellerIteration)の4種の worker を
+// 無限ループで並行実行し、ctx(WithLoadTimeout)がキャンセルされるまで走らせる。
 // (isucandarのLoadは削除するとParallel実行系の前提が崩れるため、no-opでも定義必須)
 func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) error {
 	if s.PrepareOnly {
@@ -101,9 +102,13 @@ func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) erro
 // 入札は、サーバー側では既にコミットされている可能性があるため、pendingとして
 // 突き合わせに使うことでfalse-FAILを避ける(C1)。
 //
-// 想定していないauctionへの記録(バグでもない限り起こらない)は即critical。
-// 各auctionはid<=10全件を検査する(Loadでベンチが一度も触れなかったauctionでも、
-// シード入札が消えていないかは検証したいため)。
+// 想定していないauctionへの記録は、通常は即critical。ただし出品(POST /auctions)の応答が
+// 受け取れず結果不明の出品(unknownListings > 0)が1件でもある走行に限り、その出品が
+// Listingを作れず「想定外」と誤検知されている可能性があるため、この走行全体で
+// application へ格下げする(詳細は unknownListings を使っている箇所のコメント参照)。
+// 検査対象は id<=10 の初期シードauction全件(Loadでベンチが一度も触れなかったauctionでも、
+// シード入札が消えていないかは検証したいため)に加え、ベンチが Load 中に出品した
+// listing(s.Ledger.Listings())全件も同様に突合する。
 func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep) error {
 	if s.PrepareOnly {
 		return nil
@@ -191,7 +196,8 @@ func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep
 		for _, e := range reconcileClosedAuction(li.AuctionID, d) {
 			step.AddError(failure.NewError(ErrCritical, e))
 		}
-		if err := ValidateAuctionClosedIfDue(d, time.Now().UTC(), closeGrace); err != nil {
+		// listingCloseGrace を使う(closeGraceではない): 理由は同定数のコメント参照。
+		if err := ValidateAuctionClosedIfDue(d, time.Now().UTC(), listingCloseGrace); err != nil {
 			step.AddError(failure.NewError(ErrCritical, err))
 		}
 		if d.Status == "closed" && d.WinnerID != nil {

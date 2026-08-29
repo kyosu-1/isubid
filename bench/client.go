@@ -209,24 +209,28 @@ func (c *Client) GetBidFeed(ctx context.Context, auctionID, since int64) ([]Bid,
 	return body.Bids, nil
 }
 
-// PostAuction は出品する。
+// PostAuction は出品する。PostBid と同様、4xxはエラーではなくステータスコードで返す
+// (呼び出し側が「結果不明(転送エラー/5xx)」と「確定的に未コミット(4xx)」を区別できるようにする)。
 func (c *Client) PostAuction(ctx context.Context, title, description string,
-	categoryID, startingPrice, durationSeconds int64) (*AuctionCreated, error) {
+	categoryID, startingPrice, durationSeconds int64) (*AuctionCreated, int, error) {
 	code, b, err := c.doJSON(ctx, http.MethodPost, "/auctions", map[string]any{
 		"title": title, "description": description, "category_id": categoryID,
 		"starting_price": startingPrice, "duration_seconds": durationSeconds,
 	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	if code >= http.StatusInternalServerError {
+		return nil, code, fmt.Errorf("POST /auctions: status %d (body: %s)", code, b)
 	}
 	if code != http.StatusCreated {
-		return nil, fmt.Errorf("POST /auctions: status %d (期待: 201, body: %s)", code, b)
+		return nil, code, nil
 	}
 	var a AuctionCreated
 	if err := json.Unmarshal(b, &a); err != nil {
-		return nil, fmt.Errorf("POST /auctions: 不正なJSON: %w", err)
+		return nil, code, fmt.Errorf("POST /auctions: 不正なJSON: %w", err)
 	}
-	return &a, nil
+	return &a, code, nil
 }
 
 // GetStatsMe は出品者の売上サマリを取得する。
