@@ -122,10 +122,8 @@ func (s *Scenario) Validation(ctx context.Context, step *isucandar.BenchmarkStep
 	for id := range expectedInitialAuctions {
 		known[id] = true
 	}
-	listingByID := map[int64]Listing{}
 	for _, li := range listings {
 		known[li.AuctionID] = true
-		listingByID[li.AuctionID] = li
 	}
 	for auctionID := range acceptedByAuction {
 		if !known[auctionID] {
