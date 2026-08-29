@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"time"
 
 	"github.com/isucon/isucandar"
 	"github.com/isucon/isucandar/failure"
@@ -25,6 +26,55 @@ func addErr(ctx context.Context, step *isucandar.BenchmarkStep, code failure.Str
 		return
 	}
 	step.AddError(failure.NewError(code, err))
+}
+
+const (
+	// feedReflectDeadline は自分の入札がフィードに現れるまでの許容時間。
+	// レギュレーションのリアルタイム性要件(ポーリング間引きによるズルの防止)。
+	feedReflectDeadline = 2 * time.Second
+	// feedPollInterval はフィードのポーリング間隔。
+	feedPollInterval = 100 * time.Millisecond
+)
+
+// awaitFeedReflection は自分の入札 bidID が feedReflectDeadline 以内に
+// フィードへ現れることを検証する。違反は step に直接記録する。
+//
+// ctx がキャンセルされた場合(Load終了)は違反として扱わない。走行終了間際の
+// ポーリング打ち切りを critical にすると false-FAIL になるため。
+func (s *Scenario) awaitFeedReflection(ctx context.Context, step *isucandar.BenchmarkStep,
+	c *Client, auctionID, since, bidID int64) {
+	deadline := time.Now().Add(feedReflectDeadline)
+	for {
+		feed, err := c.GetBidFeed(ctx, auctionID, since)
+		if err != nil {
+			addErr(ctx, step, ErrApplication, err)
+			return
+		}
+		step.AddScore(ScoreGETFeed)
+		if err := ValidateFeedPage(feed, since); err != nil {
+			addErr(ctx, step, ErrCritical, fmt.Errorf("auction %d: %w", auctionID, err))
+			return
+		}
+		for _, b := range feed {
+			if b.ID == bidID {
+				return // 反映を確認できた
+			}
+		}
+		if time.Now().After(deadline) {
+			if ctx.Err() != nil {
+				return // Load終了に伴う打ち切り。違反ではない
+			}
+			addErr(ctx, step, ErrCritical,
+				fmt.Errorf("auction %d: 入札 id=%d が %v 以内にフィードへ反映されない",
+					auctionID, bidID, feedReflectDeadline))
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(feedPollInterval):
+		}
+	}
 }
 
 // bidderIteration は「ログイン→一覧→詳細→入札(競り負けたら再挑戦)」の1セッション。
@@ -64,6 +114,11 @@ func (s *Scenario) bidderIteration(ctx context.Context, step *isucandar.Benchmar
 		if d.Status != "live" {
 			return
 		}
+		// フィードのカーソル起点。詳細は created_at DESC, id DESC なので先頭が最大 id。
+		var sinceID int64
+		if len(d.Bids) > 0 {
+			sinceID = d.Bids[0].ID
+		}
 		amount := d.CurrentPrice + 100 + rand.Int63n(400)
 
 		// C1: POST送信前にintentとして記録する。応答が届く前にctxキャンセル/転送エラーが
@@ -89,6 +144,7 @@ func (s *Scenario) bidderIteration(ctx context.Context, step *isucandar.Benchmar
 				return
 			}
 			step.AddScore(ScorePOSTBid)
+			s.awaitFeedReflection(ctx, step, c, target.ID, sinceID, bid.ID)
 			return
 		case 400:
 			// 競り負け: 確定的に未コミット。取り直して再入札。

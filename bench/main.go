@@ -81,6 +81,7 @@ func main() {
 		{ScoreGETList, "GET /auctions"},
 		{ScoreGETDetail, "GET /auctions/:id"},
 		{ScorePOSTBid, "POST /auctions/:id/bids"},
+		{ScoreGETFeed, "GET /auctions/:id/bids"},
 	} {
 		count := breakdown[st.tag]
 		pt := count * scoreTable[st.tag]
