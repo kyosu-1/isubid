@@ -175,14 +175,23 @@ UNIQUE 以外インデックスが1つも無い**。したがって:
 
 | プローブ | 種別 | 出現箇所 | 検出できる改悪 |
 |---|---|---|---|
-| `エルゴフロー` | **title 専用** | 生成 title(`chairNames`)のみ。どの description にも現れない | 検索が機能していない。`title LIKE` を落とした改善 |
-| `職人` | **description 専用** | 生成 description(`職人による手作業の仕上げ`)のみ。どの title にも現れない | **`description LIKE` を落とした改善** |
+| `ワークス` | **title 専用** | 生成 title `メッシュワークス NNNNN` の **index 3**(語中)。どの description にも、シードの title/description にも現れない | 検索が機能していない。`title LIKE` を落とした改善。**`LIKE '%q%'` を `LIKE 'q%'` に変える前方一致化** |
+| `手作業` | **description 専用** | 生成 description `職人による手作業の仕上げ` の **index 5**(語中)。どの title にも現れない | **`description LIKE` を落とした改善**。前方一致化 |
 | `ズンドコベロンチョ` | 該当なし | どこにも現れない | 0件・`total_count: 0`・`has_next: false` を返すこと |
 
-3語がそれぞれ「title のみ」「description のみ」「どこにもなし」に厳密に属することを
-`bench` のテストで固定する(シードの title/description と生成語彙の全組み合わせを走査して
-確認する)。この分離があるので、`title LIKE OR description LIKE` の片側を落とした改善は
-必ずどちらかのプローブで集合不一致になる。
+3語がそれぞれ「title のみ」「description のみ」「どこにもなし」に厳密に属することと、
+**title/description の先頭に来ないこと**を `bench` のテストで固定する(シードの
+title/description と生成語彙の全組み合わせを走査して確認する)。
+
+**先頭に来ないことが要件なのは、`LIKE '%q%'` を `LIKE 'q%'` に変える前方一致化の改悪を
+検出するためである。** 当初この設計は `エルゴフロー`(生成 title の index 0)と
+`職人`(生成 description の index 0)を選んでいたが、`initial-data/generate.go` の
+`Title = chairNames[...] + " " + pad5(id)` / `Description = chairDescs[...]` という
+構造上どちらも必ず先頭に現れるため、前方一致化しても同じ集合・同じ `total_count` が
+返り、検証を素通りしていた(Task 6 のレビューが実 DB で実証)。
+
+「title のみ / description のみ」の分離があるので、`title LIKE OR description LIKE` の
+片側を落とした改善は必ずどちらかのプローブで集合不一致になる。
 
 期待集合は Go の `strings.Contains` で計算する。プローブ語が `%` `_` `\` を含まない
 ことをテストで固定し、MySQL の `LIKE` と Go の `Contains` が食い違う余地を消す。
@@ -213,26 +222,58 @@ auction 4 が +12 秒、2 が +20 秒、8 が +28 秒、6 が +36 秒、10 が +
 不一致で正しいアプリを hard-fail させる)に近づく。持ち越し7 の対策(a)
 「期限が実際に到来している場合は `closed` を受理する」をここで入れる。
 
-### 3-4. Prepare(静穏期・厳密照合)
+### 3-4. Prepare(静穏期・集合照合)
 
-`has_next` が false になるまで `page=1,2,...` を辿り、連結した列に対して既存の
-3検査(件数 == シード live + snapshot live、`ends_at` 非減少、各行の内容照合)を
-そのまま適用する。ページ境界を跨いだ `ends_at` 非減少は連結によって自動的に見る。
+`has_next` が false になるまで `page=1,2,...` を辿り、連結した列を照合する。
+ページ境界を跨いだ `ends_at` 非減少は連結によって自動的に見る。
+
+**照合は「件数の厳密一致」ではなく「id 集合 + 期限切れ許容」で行う。**
+E = Prepare 開始時の期待集合、D = 走査中に期限が到来した部分集合、
+R = 実際に返ってきた行の集合とすると:
+
+- **R ⊆ E** — 期待集合に無い id が返ってきたら常に異常
+- **E \ D ⊆ R** — 期限がまだ来ていないものが欠けていたら異常
+- **|E| - |D| ≤ `total_count` ≤ |E|**
+- `len(R) == total_count` の厳密一致は**課さない**
+
+厳密一致を課せない理由は §3-3 と同じである。全ページを走査している途中で先頭側の
+オークションの期限が到来して closed になると、page 1 で既に返した行が最終ページ
+取得時点の `total_count` には含まれなくなり、**正しいアプリでも `len(R) > total_count`
+が起きる**。
+
+検出力は落ちない。「`total_count` を `len(auctions)` で返す」改悪は page 1 で
+`has_next=false` になって走査が20件で止まり、`total_count`(20)が期限未到来の
+期待件数(約60)を下回るところで捕まる。「`LIMIT` を無視して全件返す」改悪は
+`len(auctions) <= 20` で捕まる。
+
+期限判定には `endsAtTolerance`(5秒)を効かせる。`base` はアプリが基準時刻を採った
+後に採られるため、実際の `ends_at` は `base + offset` より最大 5 秒手前になりうる。
+ここをゼロ許容にすると、正しいアプリが初期化所要時間ぶんだけ早く closed にした
+オークションに対して、まだ存在を要求してしまう。
+
+**緩めないもの**(これらは厳密に照合する):
+
+- 各行の内容(title / category_id / seller / current_price / bid_count / ends_at ±5秒)
+- 連結列に id の重複が無いこと
+- `has_next == (page * 20 < total_count)`
+- 最終ページ以外はちょうど 20 件
+- ページ内・ページ跨ぎの `ends_at` 非減少
 
 追加する検査:
 
-- `total_count` が全ページで同一、かつ連結件数と一致する
-- `has_next == (page * 20 < total_count)`
-- 最終ページ以外はちょうど 20 件
-- 連結列に id の重複が無い
 - **範囲外ページ**(総ページ数 + 1)→ `200` / `auctions: []`(`null` でない)/
-  同じ `total_count` / `has_next: false`
-- **検索**: §3-2 の3プローブについて、全ページ走査した集合が期待集合と一致
-  (§3-3 の期限切れ許容つき)、`total_count` も一致
-- **カテゴリ**: `category=1` の集合一致
+  `has_next: false`
+- **検索**: §3-2 の3プローブについて、全ページ走査した集合を上の3ルールで照合
+- **カテゴリ**: `category=1` の集合照合
 - **併用**: `q` と `category` の同時指定が **AND** であること(OR 実装を落とす)
 - **不正値**: `page=0` / `page=abc` / `page=-1` / `category=abc` /
   255 rune 超の `q` → いずれも **400**
+
+**実行順序**: 検索・不正値のブロックは、代表サンプルの詳細照合ループの**後ろ**に置く。
+詳細照合(`ValidateSnapshotAuctionDetail`)は status を厳密比較しており緩和が最も
+薄いため、脆いほうを先に走らせる。検索ブロックを手前に置くと詳細ループ到達までの
+リクエストが 4 → 14 に増え、しかもその6本は `LIKE '%…%'` を含んで未最適化ターゲット
+では全件走査ページより高コストになる。
 
 ### 3-5. Load(走行中)
 
@@ -254,12 +295,12 @@ Load で見るのは**単一レスポンス内で完結する不変条件だけ*
 
 **Load のプローブは title 専用のものに限る。** 一覧レスポンスの `auctionSummary` には
 `description` が含まれないため、description で一致した行を Load 側は検証しようがない。
-description 専用プローブ(`職人`)を Load で使うと、正しい実装が返した行を「述語に
+description 専用プローブ(`手作業`)を Load で使うと、正しい実装が返した行を「述語に
 合致しない」と誤判定する。したがって:
 
 - **Prepare** は3プローブ全てを使う(スナップショットから description を知っているため
   期待集合を計算できる)
-- **Load** は title 専用プローブ(`エルゴフロー`)と `category` のみを使う
+- **Load** は title 専用プローブ(`ワークス`)と `category` のみを使う
 
 `q` の検査が**一方向**であることが要点。走行中に「期待集合に含まれるのに返ってこない」
 のは正常(closed になった、あるいは別ページへ移った)だが、「述語に合致しない行が返る」
@@ -278,7 +319,7 @@ description 専用プローブ(`職人`)を Load で使うと、正しい実装�
 | ワーカー | 変更 |
 |---|---|
 | bidder | `page=1`(= 終了が最も近い20件)を取得し、その中から選ぶ。`s.Board.random()`(新規出品)へ 1/2 の確率で逸れる分は維持 |
-| watcher | `page` を 1〜3 からランダムに選ぶ。1/3 の確率で `q=エルゴフロー`(title 専用プローブ)または `category=<1..3>` を付ける |
+| watcher | `page` を 1〜3 からランダムに選ぶ。1/3 の確率で `q=ワークス`(title 専用プローブ)または `category=<1..3>` を付ける |
 | seller | 変更なし |
 
 bidder のページ1集中は**実サイトの挙動そのもの**(終了間際のオークションに人が
@@ -310,7 +351,7 @@ live 件数が増えても入札対象が「終了が近い20件」に絞られ�
 | # | 改悪 | 検出する検査 |
 |---|---|---|
 | 1 | `LIKE '%q%'` → `LIKE 'q%'`(前方一致化) | Prepare の検索集合照合 |
-| 2 | `description` 側の条件を落とす | プローブ `職人`(description 専用)の集合照合 |
+| 2 | `description` 側の条件を落とす | プローブ `手作業`(description 専用)の集合照合 |
 | 3 | `q` と `category` を AND ではなく OR で繋ぐ | Prepare の併用検査 |
 | 4 | `total_count` を `len(auctions)` で返す | Prepare の `total_count` 一致検査 |
 | 5 | `ORDER BY ends_at` を落とす | `ends_at` 非減少(Prepare / Load 両方) |

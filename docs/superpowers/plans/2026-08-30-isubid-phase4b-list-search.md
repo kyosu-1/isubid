@@ -1191,15 +1191,16 @@ git commit -m "feat: Prepareを全ページ走査にし単一レスポンス不�
 **Interfaces:**
 - Consumes: Task 1 の `SnapshotAuction.Description`、Task 5 の `fetchAllAuctionPages` / `expectedAuction.Description`
 - Produces:
-  - `const probeTitleOnly = "エルゴフロー"` / `probeDescriptionOnly = "職人"` / `probeNoMatch = "ズンドコベロンチョ"`
+  - `const probeTitleOnly = "ワークス"` / `probeDescriptionOnly = "手作業"` / `probeNoMatch = "ズンドコベロンチョ"`
   - `func expectedLiveMatches(probe string, categoryID int64, snap *Snapshot, base time.Time) map[int64]time.Time`
   - `func ValidateSearchResult(label string, got []AuctionSummary, totalCount int64, want map[int64]time.Time, now time.Time) error`
   - Task 8 が `probeTitleOnly` を Load で使う
 
 **プローブの根拠:**
 
-- `エルゴフロー` は `initial-data/generate.go:75-79` の `chairNames` の要素。どの `chairDescs` にもシード description にも現れない → **title 専用**
-- `職人` は `chairDescs` の `職人による手作業の仕上げ` にのみ現れる。どの `chairNames` にもシード title にも現れない → **description 専用**
+- `ワークス` は `initial-data/generate.go:75-79` の `chairNames` の要素 `メッシュワークス` の index 3(語中)。どの `chairDescs` にもシード description にも現れない → **title 専用**
+- `手作業` は `chairDescs` の `職人による手作業の仕上げ` の index 5(語中)にのみ現れる。どの `chairNames` にもシード title にも現れない → **description 専用**
+- **語中であることが要件**: 先頭に出る語(旧案の `エルゴフロー` / `職人`)だと `LIKE 'q%'` への前方一致化を検出できない
 - `ズンドコベロンチョ` はどこにも現れない
 
 - [ ] **Step 1: プローブの分類を固定するテストを書く**
@@ -1278,8 +1279,8 @@ Expected: FAIL(プローブ定数が未定義)
 // 一覧レスポンスの AuctionSummary に description が無いため、description で
 // 一致した行を Load 側は検証しようがなく、正しい実装を誤判定してしまう。
 const (
-	probeTitleOnly       = "エルゴフロー"
-	probeDescriptionOnly = "職人"
+	probeTitleOnly       = "ワークス"
+	probeDescriptionOnly = "手作業"
 	probeNoMatch         = "ズンドコベロンチョ"
 )
 
@@ -1468,13 +1469,13 @@ Expected: PASS
 
 | プローブ | 期待件数 | 内訳 |
 |---|---|---|
-| `q=エルゴフロー` | 5 | 生成 live のみ(シードに `エルゴフロー` を含む title/description は無い) |
-| `q=職人` | 実測して記録する | 生成 live の description のみ |
+| `q=ワークス` | 5 | 生成 live のみ(シードに `ワークス` を含む title/description は無い) |
+| `q=手作業` | 13 | 生成 live の description のみ |
 | `q=ズンドコベロンチョ` | 0 | 該当なし |
 | `category=1` | 22 | 生成 live 18 + シード live 4(id 2,4,7,10) |
-| `q=エルゴフロー&category=1` | 3 | AND。OR なら 5 + 22 - 3 = 24 件になるので明確に区別できる |
+| `q=ワークス&category=1` | 3 | AND。OR なら 5 + 22 - 3 = 24 件になるので明確に区別できる |
 
-`q=エルゴフロー` の live 5件のカテゴリ内訳は {1: 3, 2: 1, 3: 1} である。AND結合プローブに
+`q=ワークス` の live 5件のカテゴリ内訳は {1: 3, 2: 1, 3: 1} である。AND結合プローブに
 `category=1` を選ぶのは、期待集合が 3件と十分に非空で、かつ OR 実装との差(3 対 24)が
 大きいため。**期待件数が上表と食い違った場合は、スナップショットが作り直されて
 中身が変わったことを意味するので、原因を突き止めるまで先へ進まないこと。**
@@ -1807,7 +1808,7 @@ Expected: `RESULT: PASS`、critical 0件。
 | # | 改悪 | 対象ファイル | 期待 |
 |---|---|---|---|
 | 1 | `LIKE ?` のパターンを `q + "%"`(前方一致)に変える | `webapp/go/auctions.go` の `where()` | Prepare が検索集合の不一致で FAIL |
-| 2 | `OR description LIKE ?` を削る(引数も1つ減らす) | 同上 | プローブ `職人` で FAIL |
+| 2 | `OR description LIKE ?` を削る(引数も1つ減らす) | 同上 | プローブ `手作業` で FAIL |
 | 3 | `AND category_id = ?` を `OR category_id = ?` に変える | 同上 | AND結合プローブで FAIL |
 | 4 | `TotalCount: total` を `TotalCount: int64(len(summaries))` に変える | `getAuctions` | Prepare が total_count 不一致で FAIL |
 | 5 | `ORDER BY ends_at ASC, id ASC` を `ORDER BY id ASC` に変える | 同上 | `ends_at` 非減少で FAIL |
