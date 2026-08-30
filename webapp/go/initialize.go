@@ -186,15 +186,29 @@ func (h *handler) postInitialize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	base := time.Now().UTC()
-	if err := applyRelativeSchedule(r.Context(), db, base); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
+	// 実行順序は applyGeneratedSchedule → applyRelativeSchedule の順を厳守すること
+	// (自然に見える「シードを先に整える」順に入れ替えてはいけない)。
+	// applyRelativeSchedule は seed auction 4 の ends_at を base+12秒に倒し、
+	// runAuctionCloser(1Hz、常時稼働)の対象になり得る最短の導火線を今すぐ着火する。
+	// applyGeneratedSchedule は bids 全体のフルスキャン UPDATE を含み、small規模で
+	// 約30,000行・full規模で約300,000行を読むため、完走に数百ms〜数秒かかりうる。
+	// 導火線を先に着火してからこの長いスキャンを走らせると、スキャンがもし12秒を
+	// 超えた場合に closer がシードのlive/upcomingオークションを食い荒らし、
+	// Prepareがseed件数不一致でfalse-FAILする。両関数は disjoint な id範囲
+	// (id<=12 / id>12)に作用し、どちらも同じ base から計算するため計算結果は
+	// 実行順序に依存しない。したがって生成データの長いスキャンを先に終わらせ、
+	// 導火線は最後に着火するこの順序へ入れ替えても結果は変わらず、安全余裕だけが
+	// 広がる(生成データ投入時の最短導火線は generatedEpoch 由来の base+15秒であり、
+	// 後続のシード側の主キー更新数件はマイクロ秒オーダーで終わる)。
 	if generatedDir != "" {
 		if err := applyGeneratedSchedule(r.Context(), db, base); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+	}
+	if err := applyRelativeSchedule(r.Context(), db, base); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"lang": "go"})
 }
