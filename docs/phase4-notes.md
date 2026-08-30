@@ -475,7 +475,14 @@ RESULT: PASS
   3回とも検出できなかった。4-Eで負荷パラメータ(bidders数、入札対象の絞り込み方
   など)を調整し、`medium`/`full` でも検出力を回復できるか検討が必要。
 - **持ち越し2: ベンチマーカー本体の欠陥 — エラー上限が絶対件数であるため「遅い全滅」を
-  見逃す**。これは `full` スケール固有の症状ではなく、ベンチ(`bench/`)自体の欠陥であり、
+  見逃す**
+  (**→ 4-E1 で対応済み**。下記の候補案 (a) を採り、合否条件に liveness floor
+  (`採点対象の各エンドポイントが最低 max(1, 走行秒数/10) 回は成功していること`)を
+  追加した。あわせて `errorPenalty` を 1 → 20 に引き上げている(4-B 持ち越し17)。
+  候補案 (b)(エラー上限の割合化)は**未対応のまま 4-E へ持ち越す** —— 理由と
+  必要な前提作業は「4-E1」節の持ち越し21を参照。コミット `1582910` / `7ec58c1`。
+  以下は当時の記述をそのまま残す)。
+  これは `full` スケール固有の症状ではなく、ベンチ(`bench/`)自体の欠陥であり、
   たまたま `full` の実測でその存在が露呈した、という位置づけで記録する。
   `bench/main.go` の合否判定は `pass := criticalCount == 0 && appCount <= errorLimit && total > 0`
   で、`errorLimit`(`bench/score.go`、値は100)は割合ではなく**絶対件数**。`addErr`
@@ -705,6 +712,12 @@ RESULT: PASS
 
 **採点対象7本すべてが0回でない**ことを確認。→ **PASS**。
 
+> **→ 4-E1 で手順を差し替え。** 以降のフェーズは「採点対象すべてが0回でないことを
+> 目視で明示的に確認する」のではなく、**ベンチが出力する `LIVENESS: PASS` 行を確認する**。
+> 新しい手順の定義は「4-E1」節の「ゲート3の手順(4-E1 で差し替え)」を参照。
+> 上の走行は liveness 判定の実装前なので `LIVENESS:` 行が出ておらず、当時の目視記録を
+> そのまま残してある(内訳の検算そのものは引き続き有効な手順である)。
+
 ### ゲート4(改悪7種)
 
 各改悪は1つずつ投入し、`docker compose -f dev/compose.yaml build app && up -d` で
@@ -933,7 +946,7 @@ RESULT: PASS
 |---|---|---|---|
 | 1. `GET /notifications` の回数 | 513 | **504**(0.98x) | ほぼ 1.0x → OK |
 | 1. `POST /auctions` の回数 | 497 | **485**(0.98x) | ほぼ 1.0x → OK |
-| 2. 採点対象7本が0回でない | — | 2078 / 1566 / 3627 / 1136 / 1136 / 504 / 485 | すべて非0 → OK |
+| 2. 採点対象7本が0回でない(→ 4-E1 以降は `LIVENESS: PASS`) | — | 2078 / 1566 / 3627 / 1136 / 1136 / 504 / 485 | すべて非0 → OK |
 | 3. `GET /auctions` の回数 | 496 | **2078**(検索1566 を足すと一覧系 3644) | 増加 → OK |
 
 通知ワーカーと出品ワーカーは自エンドポイントのレイテンシで律速されており、一覧の
@@ -1158,3 +1171,339 @@ full:   PREPARE: PASS   ... 14.319 total
     再発防止は2段構え: (1) 完了報告と実際の停止を混同しない、(2) **コミット
     ハッシュを報告する前に必ず `git log --oneline -1` / `git cat-file -t` で
     実在を確認する。**
+
+## 4-E1 合否判定の liveness floor と減点の実効化
+
+4-A 持ち越し2(エラー上限が絶対件数であるため「遅い全滅」を見逃す)への対処。
+候補案 (a) を採り、**採点対象の各エンドポイントが最低 `max(1, 走行秒数/10)` 回は
+成功していること**を合否条件に加えた。あわせて 4-B 持ち越し17(スコアが約3倍に
+なって `errorPenalty = 1` が相対的に弱くなった)に対し `errorPenalty` を 20 へ
+引き上げた。実装は `bench/liveness.go`(新規)・`bench/score.go`・`bench/main.go`。
+コミット `1582910`(純関数の切り出しと `errorPenalty`)、`7ec58c1`(合否判定への
+組み込みと内訳出力の単一定義化)。
+
+### 設計判断
+
+- **floor を走行時間に比例させた(`max(1, 秒数/10)`)理由。** 固定値にすると
+  `-duration` を短くしたデバッグ走行で正しいアプリを落としてしまう。60秒走行なら
+  floor は6回。採点対象で最小になるのは常に `POST /auctions` で、`small` の
+  60秒走行の実測は本ドキュメントに記録があるものだけで
+  **484 / 485 / 487回(4-B)、496回(本節ゲート1)** ——
+  floor 6 はその 1/80 前後であり、正しい実装を誤って落とす余地はほぼ無い。
+  一方で「0回」だけでなく「ほぼ死んでいる」状態も捕まえられる。
+  10秒走行では floor 1 に落ちる(下限は1)。
+  (設計文書 §floor の根拠表は最小値を 493回としているが、この数字と表の他の行は
+  本ドキュメントのどの走行ログとも一致しない —— 下記の持ち越し24 を参照。
+  floor 6 という結論は上記の実測レンジからも同じく導かれるので、値の妥当性には
+  影響しない。)
+- **ワーカー数で条件付けした(`livenessRequired`)理由。** `-sellers 0` のように
+  ワーカーを止めたデバッグ走行では、そのワーカーしか叩かないエンドポイントが
+  構造的に0回になる。これを FAIL にすると floor がデバッグ走行を壊す。対応表は
+  `bench/load.go` の各 `*Iteration` が実際に呼ぶエンドポイントから導いており、
+  新しい採点タグを足し忘れると黙って判定をすり抜けるので
+  `TestLivenessRequiredCoversAllTags` が固定している。
+- **`errorPenalty` を定数20にした理由。** 「成功1リクエストあたりの平均得点」の
+  約11倍に置き、エラー1件が成功約11リクエストぶんの損失になるようにした。
+  上限の100件で2000点、4-B のスコア帯 raw 19086 に対して約10.5%。
+  平均得点は 4-B ゲート3 の実測ログから
+  `raw 19086 ÷ 成功10532回(= 内訳7本の合計)` = **約1.81点/回** と再計算できる
+  (`bench/score.go` のコメントと設計文書は分母を 10331回・約1.85点としているが、
+  この分母は本ドキュメントのどの走行ログからも再現できない ——
+  下記の持ち越し24。20 という値の妥当性には影響しない差である)。
+  **いずれにせよこれは採用スケールに依存する絶対値であり、割合ベースではない**
+  (持ち越し22)。
+
+### ゲート測定(2026-08-30、本ブランチ HEAD `7ec58c1`)
+
+実行順は G1 → G2 → G5 → G4 → G3。G2 と G3 は一時的な改変を投入したため、
+各ゲートの直前後に `git checkout` + 再ビルドで復元し `git status --short` が空である
+ことを確認している。以下のブロックはいずれもツールの実出力の転記である。
+
+**ゲート1(正常な60秒走行)**
+
+```
+SCORE: 19636  (raw 19636, penalty 0)
+  GET /auctions            : 2163回 (2163点)
+  GET /auctions (検索)       : 1583回 (3166点)
+  GET /auctions/:id        : 3726回 (3726点)
+  POST /auctions/:id/bids  : 1175回 (5875点)
+  GET /auctions/:id/bids   : 1174回 (1174点)
+  GET /notifications       : 526回 (1052点)
+  POST /auctions           : 496回 (2480点)
+ERRORS: 0件 (critical: 0件)
+LIVENESS: PASS (floor 6回、採点7本すべて到達)
+RESULT: PASS
+```
+
+stderr は0行(`ERR:` 行なし)。内訳の検算:
+2163×1 + 1583×2 + 3726×1 + 1175×5 + 1174×1 + 526×2 + 496×5
+= 2163 + 3166 + 3726 + 5875 + 1174 + 1052 + 2480 = **19636 = raw**。
+penalty 0 なので SCORE 19636 = raw。一致。→ **PASS**。
+
+**ゲート2(遅い全滅を検出できること)← このフェーズの存在理由**
+
+4-A で `full` が `RESULT: PASS` を通した欠陥そのものを再現する。**クライアントの
+タイムアウト(10秒)を超えてブロックする**改変であることが本質で、即座に 500 を
+返す「速い失敗」ではエラー件数が上限を超えて既存の判定でも落ちてしまい、この欠陥の
+再現にならない。
+
+*計画からの逸脱(1件)。* 当初の指定は `getAuctions` の先頭に無条件の
+`time.Sleep(15 * time.Second)` を1行入れる、というものだった。これを実際に投入すると
+**Prepare 自身が `GET /auctions?page=1` で10秒タイムアウトし、Load へ到達しない**:
+
+```
+SCORE: 0  (raw 0, penalty 20)
+  (内訳7行は採点7本すべて 0回 0点。ここでは省略)
+ERRORS: 1件 (critical: 0件)
+LIVENESS: FAIL (floor 6回)
+  (dead 7行は採点7本すべて 0回。ここでは省略)
+RESULT: FAIL
+ERR: prepare: timeout: Get "http://localhost:8080/auctions?page=1": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+```
+
+この走行は `total > 0` が偽なので**旧ルールでも FAIL しており、4-A の欠陥の再現に
+なっていない**(4-A では Prepare は通っていた。単一リクエストの Prepare は速く、
+遅くなるのは並列負荷がかかる Load だけ、というのが当時の実態である)。そこで
+**Load 区間だけを遅くする**よう改変を調整した。`-prepare-only` を3回走らせて
+nginx のアクセスログを数え、Prepare が発行する一覧リクエストが毎回きっかり
+**15回**(`GET /auctions` 系。`POST /initialize` は Prepare の先頭と末尾で2回)で
+あることを確認したうえで、先頭15回だけ素通しするゲートを付けた:
+
+```go
+var degradeCalls int64
+
+const degradePassthrough = 15
+
+func (h *handler) getAuctions(w http.ResponseWriter, r *http.Request) {
+	if atomic.AddInt64(&degradeCalls, 1) > degradePassthrough {
+		time.Sleep(15 * time.Second) // 改悪: クライアントタイムアウト(10秒)を超えてブロックする
+	}
+	q, err := parseAuctionListQuery(r.URL.Query())
+```
+
+この改変での60秒走行の実出力:
+
+```
+SCORE: 3178  (raw 4378, penalty 1200)
+  GET /auctions            : 0回 (0点)
+  GET /auctions (検索)       : 0回 (0点)
+  GET /auctions/:id        : 0回 (0点)
+  POST /auctions/:id/bids  : 0回 (0点)
+  GET /auctions/:id/bids   : 0回 (0点)
+  GET /notifications       : 634回 (1268点)
+  POST /auctions           : 622回 (3110点)
+ERRORS: 60件 (critical: 0件)
+LIVENESS: FAIL (floor 6回)
+  GET /auctions            : 0回
+  GET /auctions (検索)       : 0回
+  GET /auctions/:id        : 0回
+  POST /auctions/:id/bids  : 0回
+  GET /auctions/:id/bids   : 0回
+RESULT: FAIL
+```
+
+stderr の `ERR:` 行は60行、すべて `load: timeout: application: timeout: Get
+"http://localhost:8080/auctions?..." : context deadline exceeded (Client.Timeout
+exceeded while awaiting headers)`(内訳: `?page=N` 49件、`?category=N&page=N` 6件、
+`?page=N&q=ワークス` 5件)。critical は0件。
+
+名指しされたのは想定どおり一覧経路の**5本**で、`GET /notifications` と
+`POST /auctions` は生き残っている(`notifierIteration` / `sellerIteration` は
+`GetAuctions` を呼ばないため。bidder は一覧を引けないと詳細以降へ進めない)。
+
+内訳の検算: 634×2 + 622×5 = 1268 + 3110 = **4378 = raw**。
+penalty = 60件 × `errorPenalty` 20 = **1200**。4378 − 1200 = **3178 = SCORE**。一致。
+
+**この走行が liveness 判定なしなら PASS していたことの証拠:**
+
+| 旧ルールの項 | 実測値 | 成否 |
+|---|---|---|
+| `criticalCount == 0` | `critical: 0件` | 真 |
+| `appCount <= errorLimit`(上限100) | アプリエラー 60件(= 60 − critical 0) | 真(**上限に達していない**) |
+| `total > 0` | `SCORE: 3178` | 真 |
+
+3項すべてが真なので、旧ルール
+`pass := criticalCount == 0 && appCount <= errorLimit && total > 0` は真になっていた。
+**これが 4-A で `full` が `RESULT: PASS` を出力した機構そのものである。**
+liveness floor によって `len(dead) == 0` が偽になり、いま `RESULT: FAIL` になる。
+→ **PASS(欠陥を検出できた)**。
+
+確認後 `git checkout webapp/go/auctions.go` + 再ビルドで復元し、`git status --short`
+が空、`意図的に遅い実装` コメント7箇所が無傷であることを確認した。
+
+**ゲート3(ワーカーを止めても誤検知しないこと)**
+
+```
+SCORE: 20492  (raw 20492, penalty 0)
+  GET /auctions            : 2510回 (2510点)
+  GET /auctions (検索)       : 2468回 (4936点)
+  GET /auctions/:id        : 4294回 (4294点)
+  POST /auctions/:id/bids  : 1285回 (6425点)
+  GET /auctions/:id/bids   : 1285回 (1285点)
+  GET /notifications       : 521回 (1042点)
+  POST /auctions           : 0回 (0点)
+ERRORS: 0件 (critical: 0件)
+LIVENESS: PASS (floor 6回、採点7本すべて到達)
+RESULT: PASS
+```
+
+stderr は0行。`POST /auctions` が **0回** でも `LIVENESS: PASS` / `RESULT: PASS`、
+critical 0件。`livenessRequired` の条件付けは意図どおり働いている。
+内訳の検算: 2510×1 + 2468×2 + 4294×1 + 1285×5 + 1285×1 + 521×2 + 0×5
+= 2510 + 4936 + 4294 + 6425 + 1285 + 1042 + 0 = **20492 = raw**。一致。
+
+**ただしこの結果は、コミット済みのコードでは再現しない。**
+`-sellers 0` を素のまま走らせると、出品ワーカーは**止まるどころか無制限並列で走る**
+(持ち越し23)。実際の走行は 2:45 かかって以下で終わった:
+
+```
+SCORE: 0  (raw 0, penalty 5387360)
+  (内訳7行は採点7本すべて 0回 0点。ここでは省略)
+ERRORS: 269368件 (critical: 0件)
+LIVENESS: FAIL (floor 6回)
+  (dead 6行 = POST /auctions を除く6本、すべて 0回。ここでは省略)
+RESULT: FAIL
+```
+
+`ERR:` で始まる行は 269368行(`ERRORS:` の件数と一致。stderr ファイル全体は
+289522行で、差分は nginx の 504 HTML 本文が複数行にまたがるぶん)。内訳の上位は
+`Post ".../login"` の `context deadline exceeded` 191195件 /
+`dial tcp: connect: resource temporarily unavailable` 27815件 /
+`connect: operation timed out` 22102件 / `EOF` 11585件 で、
+**マシン側の接続・CPU が枯渇したことによる全滅**であり liveness 判定の問題ではない
+(`-sellers 0` にしたのに `POST "http://localhost:8080/auctions"` を含むエラーが
+234件出ていることが、出品ワーカーが動いていた直接の証拠)。
+penalty も 269368 × `errorPenalty` 20 = 5387360 で報告値と一致する。
+なお `POST /auctions` が dead に挙がっていないことから、この壊れた走行でも
+`livenessRequired` の条件付け自体は設計どおり効いている。
+
+上に載せた PASS の実測は、`bench/scenario.go` の worker 起動を
+「ワーカー数が0以下なら `Process` を呼ばない」に変えた**一時パッチ(未コミット)**を
+当てて採ったものである。パッチは計測後に `git checkout bench/scenario.go` で戻し、
+`git status --short` が空であることを確認した。**ゲート3は liveness floor の設計に
+関しては PASS だが、ベンチ本体の持ち越し23 を直すまで、コミット済みコードでは
+この手順を再実行できない。** 条件付けロジック自体は
+`TestLivenessRequiredRespectsWorkerCounts`(`bench/liveness_test.go`)が
+committed テストとして固定している。
+
+**ゲート4(短い走行でも壊れないこと、`-duration 10s`)**
+
+```
+SCORE: 3547  (raw 3547, penalty 0)
+  GET /auctions            : 379回 (379点)
+  GET /auctions (検索)       : 302回 (604点)
+  GET /auctions/:id        : 650回 (650点)
+  POST /auctions/:id/bids  : 219回 (1095点)
+  GET /auctions/:id/bids   : 219回 (219点)
+  GET /notifications       : 90回 (180点)
+  POST /auctions           : 84回 (420点)
+ERRORS: 0件 (critical: 0件)
+LIVENESS: PASS (floor 1回、採点7本すべて到達)
+RESULT: PASS
+```
+
+stderr は0行。`LIVENESS: PASS (floor 1回、…)` と表示され `RESULT: PASS`。
+**floor 1 すら満たせないエンドポイントは無かった**(最小は `POST /auctions` の84回で
+floor の84倍)。内訳の検算: 379×1 + 302×2 + 650×1 + 219×5 + 219×1 + 90×2 + 84×5
+= 379 + 604 + 650 + 1095 + 219 + 180 + 420 = **3547 = raw**。一致。→ **PASS**。
+
+**ゲート5(Prepare の非回帰、`-prepare-only`)**
+
+ゲート2 の改変を戻したあと、正常なアプリに対して計7回実行した(ゲート2 の
+Prepare リクエスト数を数えるために繰り返したもので、そのまま非回帰の測定になっている)。
+**7回とも標準出力は `PREPARE: PASS` の1行のみ、stderr は0行、そして
+`LIVENESS:` 行は出ていない**(`*prepareOnly` の分岐が liveness 判定より手前で
+`return` するため)。所要時間(`go run` の起動込み、ビルドキャッシュは温かい状態)は
+**1.722s / 1.730s / 1.734s / 1.735s / 1.759s / 1.768s / 1.817s** で、
+レンジは **1.722〜1.817秒**。
+
+6秒基準内。→ **PASS**。(4-B のゲート2実測 1.7〜1.8秒と同水準で、非回帰。)
+
+### ゲート3の手順(4-E1 で差し替え)
+
+**以降のフェーズは次の手順を使う。**
+
+> **ゲート3(60秒走行、通常のwebapp)**
+> 1. `cd bench && go run . -target http://localhost:8080 -snapshot ../initial-data/out/snapshot.json`
+> 2. **`LIVENESS: PASS` 行が出ていることを確認する。** 出ていなければ、続く行が
+>    floor を下回った採点対象を名指ししている。
+> 3. `RESULT: PASS` と `critical: 0件` を確認する。
+> 4. スコア内訳を検算する(各行 `count × weight == points`、全行の合計 `== raw`、
+>    `SCORE == raw − penalty`)。
+
+4-A・4-B のゲート手順にあった「採点対象すべてが0回でないことを**目視で明示的に
+確認する**」は、手順2 に置き換わる。目視の脱落が 4-A の見逃しを生んだので、
+**判定はベンチ側に持たせ、人間は出力行を読むだけにする**のが差し替えの趣旨である。
+手順4(内訳の検算)は引き続き人間が行う —— こちらは自動化されていない。
+
+### まとめと持ち越し(4-Eへ)
+
+**ゲート1・2・4・5 は PASS。ゲート3 は liveness floor の設計としては PASS だが、
+コミット済みコードでは手順を再実行できない**(持ち越し23)。
+4-A 持ち越し2 は本フェーズで対応済み(該当箇所に追記済み)。4-B 持ち越し17
+(`errorPenalty` の相対的な弱さ)も `errorPenalty = 20` で対応したが、絶対値のままで
+あることは変わっていない(持ち越し22)。
+
+- **持ち越し21: エラーのエンドポイント紐付けと、割合ベースのエラー上限。**
+  4-A 持ち越し2 の候補案 (b) は未対応で残る。現在エラーは
+  `result.Errors.All()` のフラットな配列で、**どのエンドポイントで起きたか分からない**。
+  そのため「一部のエンドポイントだけが遅く壊れている」(たとえば6回成功・60回失敗)は、
+  全体のエラー率では捕まえられない —— 試行が1万回あれば 0.6% にしかならず、
+  どんな割合しきい値を置いても発火しない。**割合化を入れる前に、まず
+  `addErr`(`bench/load.go`)の全呼び出し箇所へエンドポイントのタグを配り、
+  エラーをエンドポイント別に集計できるようにする変更が要る。** その上でなら
+  「エンドポイント単位のエラー率」という、liveness floor より細かい判定が書ける。
+- **持ち越し22: `errorPenalty = 20` は採用スケールに依存する。** 20 という値は
+  4-B `small` の「成功1リクエストあたり平均約1.8点」から逆算したもので、
+  スコアのスケールが変われば相対的な重みも変わる。**4-E で採用スケールを
+  再決定する際に再調整が要る。** 根本的には持ち越し21 と同じ軸(絶対値 vs 割合)の
+  問題である。
+- **持ち越し23: `-bidders 0` / `-watchers 0` / `-notifiers 0` / `-sellers 0` は
+  ワーカーを止めず、無制限並列で走らせる。** `bench/scenario.go` の `Load` は
+  `worker.WithMaxParallelism(int32(s.Sellers))` を無条件に渡し、4本の worker すべてを
+  `Process` する。isucandar 側の `parallel.isLimitKept` は
+  `limit < 1 || count < (limit*2)` と書かれており、**`limit == 0` は「上限なし」と
+  解釈される**(`NewParallel` も `limit > 0` のときしか `doner` チャネルを作らない)。
+  結果、`-sellers 0` は出品ワーカーを無限ループ・無制限並列で走らせ、goroutine と
+  接続を際限なく増やして走行全体を破壊する(上記ゲート3の実測: エラー269368件、
+  2分45秒)。**デバッグ用途でワーカーを止める操作が、事実上マシンを落とす操作に
+  なっている。** 対策は `Load` で「ワーカー数が0以下なら `Process` を呼ばない」と
+  すること(一時パッチで動作は確認済み)。あわせて `main.go` で負のワーカー数を
+  弾くことも検討する。**4-E1 のゲート3を素の手順で再実行できるようにするには、
+  これを先に直す必要がある。**
+- **持ち越し24: 設計文書の実測表が、どの走行ログとも一致しない数字を含んでいる。**
+  4-E1 設計文書 §floor の根拠表は
+  `3250 / 2078 / 1723 / 1137 / 1137 / 513 / 493`(合計10331回)を「4-B の `small` 実測」
+  としているが、**4-B ゲート3 の実測ログは
+  `2078 / 1566 / 3627 / 1136 / 1136 / 504 / 485`(合計10532回、raw 19086)**であり、
+  一致するのは `GET /auctions` の 2078 のみ。他の6行と合計10331回は本ドキュメントの
+  どの走行ログからも再現できない(4-A の `medium` 走行に 493 という値はあるが、
+  それは別スケール・別セクションの数字である)。この 10331 は設計文書から実装計画へ、
+  さらに `bench/score.go:40` のコメントへ転記されており、**現在コミット済みの
+  コードコメントが出所不明の数字を持っている状態**である。
+  floor 6 も `errorPenalty` 20 も、上記の再計算(平均約1.81点/回、最小484〜496回)で
+  同じ結論に落ちるので**値の妥当性には影響しない**が、コメントの数字は 4-E で
+  実測に合わせて直すこと。**「報告書のスコア内訳が算術的に成立しなかった」という
+  このプロジェクトの既知の事故と同じ型**(数字を実出力から転記せず再構成した)
+  なので、持ち越しとして明示的に残す。
+- **軽微な持ち越し(4-E で手が入る際についでに直すもの)**:
+  - `LIVENESS: PASS` のメッセージが `採点7本すべて到達` と `len(scoredTags)` を
+    そのまま出すため、`livenessRequired == false` で判定対象外になったタグがあっても
+    「7本すべて」と表示される。上記ゲート3の実測がまさにその状態
+    (`POST /auctions` は0回なのに「採点7本すべて到達」)。表示のみの問題だが
+    読み手を誤解させる。判定対象の本数を数えて出すのが素直。
+  - `LIVENESS: FAIL` 時に表示されるのは floor を下回ったタグのみで、
+    `livenessRequired == false` で判定対象外にしたタグは出力に現れない。
+    デバッグ時に「なぜ対象外なのか」が分からない。実害なし。
+  - `TestLivenessRequiredRespectsWorkerCounts` の `noWatchers` ケースに
+    `ScoreGETDetail` の対称テストが無い(`ScoreGETList` と `ScoreGETDetail` が同じ
+    `switch` の case なので実害は小さいが、将来この2つを分離したときに検出力が落ちる)。
+  - `TestLivenessFloor` に f=2 相当(20秒)のケースが無く、`f > 1` の比較演算子の
+    境界が60秒/120秒のケースで間接的にしか検証されていない。
+- **プロセス上の教訓(4-E1)**:
+  - **「改悪を1行入れる」型のゲートは、Prepare を通過することを設計時に確かめること。**
+    ゲート2 の当初指定(無条件 `time.Sleep`)は Prepare 自身を殺してしまい、
+    `total > 0` が偽になる別の経路で FAIL していた。**FAIL したこと自体は同じでも、
+    再現しようとしていた欠陥は再現できていなかった** —— 「FAIL した」で満足すると
+    ゲートが空振りしていることに気づけない。旧ルールの3項を1つずつ突き合わせる
+    手順(上記の表)を踏んだことで発覚した。
