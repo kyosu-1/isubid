@@ -88,12 +88,35 @@ func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) erro
 	if err != nil {
 		return err
 	}
+	// ワーカー数が0以下なら Process を呼ばない。
+	//
+	// これを省くと `-sellers 0` が「出品ワーカーを止める」ではなく「無制限並列で
+	// 走らせる」になる。isucandar の parallel.isLimitKept は
+	//
+	//	return count, limit, limit < 1 || count < (limit*2)
+	//
+	// と書かれており、`limit < 1` を「上限なし」と解釈する(NewParallel も
+	// limit > 0 のときしか doner チャネルを作らない)。WithMaxParallelism(0) は
+	// そのまま limit=0 になるので、WithInfinityLoop と組み合わさると
+	// 無限ループ・無制限並列になり、goroutine と接続が際限なく増えて走行が全滅する
+	// (4-E1 実測: -sellers 0 でエラー269368件・2分45秒。docs/phase4-notes.md 持ち越し23)。
+	// 負値も `limit < 1` に該当するので同じ扱いで弾く。
+	//
+	// liveness 判定のワーカー条件付け(livenessRequired)は「ワーカーを止めた
+	// デバッグ走行で false-FAIL させない」ための防御であり、そもそもワーカーを
+	// 止められなければ到達できない。このガードが条件付けの前提を成立させている。
 	var wg sync.WaitGroup
-	wg.Add(4)
-	go func() { defer wg.Done(); bidder.Process(ctx) }()
-	go func() { defer wg.Done(); watcher.Process(ctx) }()
-	go func() { defer wg.Done(); notifier.Process(ctx) }()
-	go func() { defer wg.Done(); seller.Process(ctx) }()
+	start := func(n int, w *worker.Worker) {
+		if n <= 0 {
+			return
+		}
+		wg.Add(1)
+		go func() { defer wg.Done(); w.Process(ctx) }()
+	}
+	start(s.Bidders, bidder)
+	start(s.Watchers, watcher)
+	start(s.Notifiers, notifier)
+	start(s.Sellers, seller)
 	wg.Wait()
 	return nil
 }

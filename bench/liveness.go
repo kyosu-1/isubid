@@ -37,11 +37,16 @@ type workerCounts struct {
 
 // livenessFloor は走行時間から、採点対象1本あたりの最低成功回数を返す。
 //
-// 4-B の small 実測では、最小のエンドポイント(POST /auctions)でも60秒で493回
-// 成功している。走行秒数/10(60秒なら6回)はその 1/80 であり、正しいアプリを
+// 採点対象で最小になるのは常に POST /auctions で、4-B の small 実測は
+// 493回(Task 8 レビュー実測。docs/superpowers/plans/2026-08-30-isubid-phase4b-list-search.md)、
+// 4-B ゲート3 で485回、4-E1 ゲート1 で496回(いずれも60秒走行)。
+// 走行秒数/10(60秒なら6回)はその 1/80 前後であり、正しいアプリを
 // 誤って落とす余地はほぼ無い。一方で「0回」だけでなく「ほぼ死んでいる」状態も
 // 捕まえられる。走行時間に比例させているのは、-duration を短くしたデバッグ走行で
 // 壊れないようにするため。
+//
+// 逆に言うと floor が捕まえるのは「全滅・ほぼ全滅」だけで、「60秒で10回しか
+// 成功しない」程度の劣化は通す(docs/phase4-notes.md 持ち越し25)。
 func livenessFloor(d time.Duration) int64 {
 	if f := int64(d / (10 * time.Second)); f > 1 {
 		return f
