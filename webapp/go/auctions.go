@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -128,7 +129,10 @@ func parseAuctionListQuery(v url.Values) (auctionListQuery, error) {
 	q := auctionListQuery{Page: 1}
 	if s := v.Get("page"); s != "" {
 		n, err := strconv.ParseInt(s, 10, 64)
-		if err != nil || n < 1 {
+		// 上限を math.MaxInt64/auctionsPerPage で切る: これを超えると
+		// (q.Page-1)*auctionsPerPage や q.Page*auctionsPerPage が int64 を
+		// 溢れ、OFFSET が負値になって MySQL エラー(500)を引き起こす。
+		if err != nil || n < 1 || n > math.MaxInt64/auctionsPerPage {
 			return q, errors.New("invalid page")
 		}
 		q.Page = n
@@ -168,8 +172,8 @@ func (q auctionListQuery) where() (string, []any) {
 }
 
 // escapeLike は LIKE パターン中で特別な意味を持つ文字をエスケープする。
-// バックスラッシュを最初に置換しないと、後から足したエスケープ文字を
-// 二重にエスケープしてしまう。
+// strings.NewReplacer は入力を1パスで走査し置換結果を再走査しないため、
+// この3文字(\ % _)の置換順序には依存しない。
 func escapeLike(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }

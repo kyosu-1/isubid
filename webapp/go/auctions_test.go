@@ -424,6 +424,38 @@ func TestGetAuctionsPagination(t *testing.T) {
 	}
 }
 
+// TestGetAuctionsHasNextAtExactBoundary は live がちょうど1ページ分(20件)の
+// ときに has_next が false であることを検証する。既存テストの (total_count, page)
+// の組み合わせは page*auctionsPerPage < total と <= total が常に同じ値になり、
+// この境界(total == page*auctionsPerPage)を区別できていなかった。
+func TestGetAuctionsHasNextAtExactBoundary(t *testing.T) {
+	ts := newTestServer(t)
+	initApp(t, ts)
+	createLiveAuctions(t, ts, 10) // live は 10 + 10 = 20件 (ちょうど1ページ分)
+
+	p1 := getAuctionList(t, ts.URL, "?page=1")
+	if len(p1.Auctions) != 20 {
+		t.Fatalf("page 1 の件数 = %d, want 20", len(p1.Auctions))
+	}
+	if p1.TotalCount != 20 {
+		t.Errorf("page 1 の total_count = %d, want 20", p1.TotalCount)
+	}
+	if p1.HasNext {
+		t.Error("page 1 の has_next = true, want false (total == page*auctionsPerPage の境界)")
+	}
+
+	p2 := getAuctionList(t, ts.URL, "?page=2")
+	if len(p2.Auctions) != 0 {
+		t.Errorf("page 2 の件数 = %d, want 0", len(p2.Auctions))
+	}
+	if p2.TotalCount != 20 {
+		t.Errorf("page 2 の total_count = %d, want 20", p2.TotalCount)
+	}
+	if p2.HasNext {
+		t.Error("page 2 の has_next = true, want false")
+	}
+}
+
 func TestGetAuctionsPageOutOfRange(t *testing.T) {
 	ts := newTestServer(t)
 	initApp(t, ts)
@@ -462,7 +494,7 @@ func TestGetAuctionsInvalidPage(t *testing.T) {
 	ts := newTestServer(t)
 	initApp(t, ts)
 
-	for _, q := range []string{"?page=0", "?page=-1", "?page=abc", "?page=1.5", "?page=99999999999999999999"} {
+	for _, q := range []string{"?page=0", "?page=-1", "?page=abc", "?page=1.5", "?page=99999999999999999999", "?page=9223372036854775807"} {
 		res, err := http.Get(ts.URL + "/auctions" + q)
 		if err != nil {
 			t.Fatal(err)

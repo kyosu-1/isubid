@@ -77,6 +77,12 @@ func TestInitializeSetsRelativeEndsAt(t *testing.T) {
 	list := l.Auctions
 
 	wantOrder := []int64{4, 2, 8, 6, 10, 1, 3, 5, 7, 9}
+	// ページネーション導入後、len(list) は1ページの上限(auctionsPerPage)で
+	// 飽和するため、実際の live 件数の検証には total_count を使う
+	// (len(list) だけを見ると、live が上限を超えていても正しい値を報告できない)。
+	if l.TotalCount != int64(len(wantOrder)) {
+		t.Fatalf("total_count = %d, want %d", l.TotalCount, len(wantOrder))
+	}
 	if len(list) != len(wantOrder) {
 		t.Fatalf("len = %d, want %d", len(list), len(wantOrder))
 	}
@@ -117,8 +123,9 @@ func TestInitializeWithoutGeneratedData(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&l); err != nil {
 		t.Fatal(err)
 	}
-	// シードの live は10件のまま
-	if len(l.Auctions) != 10 {
-		t.Fatalf("live = %d件, want 10 (生成データが混入している)", len(l.Auctions))
+	// シードの live は10件のまま。len(l.Auctions) はページネーションで
+	// auctionsPerPage(20件)に飽和するため、total_count で検証する。
+	if l.TotalCount != 10 {
+		t.Fatalf("live = %d件, want 10 (生成データが混入している)", l.TotalCount)
 	}
 }
