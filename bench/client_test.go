@@ -56,6 +56,26 @@ func TestPostAuctionStatusCodes(t *testing.T) {
 	}
 }
 
+func TestAuctionListParamsQuery(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		p    AuctionListParams
+		want string
+	}{
+		{"ゼロ値は空", AuctionListParams{}, ""},
+		{"page のみ", AuctionListParams{Page: 2}, "page=2"},
+		{"q のみ", AuctionListParams{Q: "エルゴフロー"}, "q=%E3%82%A8%E3%83%AB%E3%82%B4%E3%83%95%E3%83%AD%E3%83%BC"},
+		{"category のみ", AuctionListParams{Category: 3}, "category=3"},
+		{"全部", AuctionListParams{Page: 2, Q: "椅子", Category: 1}, "category=1&page=2&q=%E6%A4%85%E5%AD%90"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.p.query(); got != tt.want {
+				t.Errorf("query() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // 転送エラー(サーバーに到達できない)はステータスコード0でエラーを返す。
 func TestPostAuctionTransportError(t *testing.T) {
 	// 即座にリスンを閉じ、接続不能なアドレスへ向ける。

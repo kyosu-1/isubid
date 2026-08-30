@@ -95,11 +95,12 @@ func (s *Scenario) bidderIteration(ctx context.Context, step *isucandar.Benchmar
 		addErr(ctx, step, ErrApplication, err)
 		return
 	}
-	list, err := c.GetAuctions(ctx)
+	l, err := c.GetAuctions(ctx, AuctionListParams{})
 	if err != nil {
 		addErr(ctx, step, ErrApplication, err)
 		return
 	}
+	list := l.Auctions
 	step.AddScore(ScoreGETList)
 	if len(list) == 0 {
 		addErr(ctx, step, ErrCritical, fmt.Errorf("GET /auctions: 開催中オークションが0件"))
@@ -179,11 +180,12 @@ func (s *Scenario) watcherIteration(ctx context.Context, step *isucandar.Benchma
 		addErr(ctx, step, ErrApplication, err)
 		return
 	}
-	list, err := c.GetAuctions(ctx)
+	l, err := c.GetAuctions(ctx, AuctionListParams{})
 	if err != nil {
 		addErr(ctx, step, ErrApplication, err)
 		return
 	}
+	list := l.Auctions
 	step.AddScore(ScoreGETList)
 	for _, a := range list {
 		if a.Status != "live" {

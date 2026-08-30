@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/isucon/isucandar/agent"
@@ -123,19 +125,55 @@ func (c *Client) Login(ctx context.Context, name, password string) (*User, error
 	return c.auth(ctx, "/login", name, password, http.StatusOK)
 }
 
-func (c *Client) GetAuctions(ctx context.Context) ([]AuctionSummary, error) {
-	code, b, err := c.doJSON(ctx, http.MethodGet, "/auctions", nil)
+// AuctionListParams は GET /auctions のクエリ。ゼロ値は「page 未指定・絞り込み無し」。
+type AuctionListParams struct {
+	Page     int    // 0 なら page を送らない
+	Q        string // 空なら q を送らない
+	Category int64  // 0 なら category を送らない
+}
+
+// query はクエリ文字列を組み立てる(値はキー名の辞書順に並ぶ)。
+func (p AuctionListParams) query() string {
+	v := url.Values{}
+	if p.Page != 0 {
+		v.Set("page", strconv.Itoa(p.Page))
+	}
+	if p.Q != "" {
+		v.Set("q", p.Q)
+	}
+	if p.Category != 0 {
+		v.Set("category", strconv.FormatInt(p.Category, 10))
+	}
+	return v.Encode()
+}
+
+func (c *Client) GetAuctions(ctx context.Context, p AuctionListParams) (*AuctionList, error) {
+	path := "/auctions"
+	if q := p.query(); q != "" {
+		path += "?" + q
+	}
+	code, b, err := c.doJSON(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
 	if code != http.StatusOK {
-		return nil, fmt.Errorf("GET /auctions: status %d (body: %s)", code, b)
+		return nil, fmt.Errorf("GET %s: status %d (body: %s)", path, code, b)
 	}
-	var list []AuctionSummary
-	if err := json.Unmarshal(b, &list); err != nil {
-		return nil, fmt.Errorf("GET /auctions: 不正なJSON: %w", err)
+	var l AuctionList
+	if err := json.Unmarshal(b, &l); err != nil {
+		return nil, fmt.Errorf("GET %s: 不正なJSON: %w", path, err)
 	}
-	return list, nil
+	if l.Auctions == nil {
+		return nil, fmt.Errorf("GET %s: auctions が null (期待: 空配列でも [])", path)
+	}
+	return &l, nil
+}
+
+// GetAuctionsRaw は生のクエリ文字列を送り、ステータスコードだけを返す。
+// 不正値が 400 になることの検証に使う(ボディの形は問わない)。
+func (c *Client) GetAuctionsRaw(ctx context.Context, rawQuery string) (int, error) {
+	code, _, err := c.doJSON(ctx, http.MethodGet, "/auctions?"+rawQuery, nil)
+	return code, err
 }
 
 func (c *Client) GetAuction(ctx context.Context, id int64) (*AuctionDetail, error) {

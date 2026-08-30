@@ -58,6 +58,13 @@ type Stats struct {
 	LiveCount   int64 `json:"live_count"`
 }
 
+// AuctionList は GET /auctions のレスポンス。
+type AuctionList struct {
+	Auctions   []AuctionSummary `json:"auctions"`
+	TotalCount int64            `json:"total_count"`
+	HasNext    bool             `json:"has_next"`
+}
+
 type Notification struct {
 	ID        int64     `json:"id"`
 	Type      string    `json:"type"`

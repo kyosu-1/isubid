@@ -365,10 +365,11 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 	}
 
 	// 2. 初期データの検証
-	list, err := c.GetAuctions(ctx)
+	l, err := c.GetAuctions(ctx, AuctionListParams{})
 	if err != nil {
 		return err
 	}
+	list := l.Auctions
 	if s.Snapshot != nil {
 		if err := ValidateAuctionListWithSnapshot(list, s.Snapshot, base); err != nil {
 			return err
