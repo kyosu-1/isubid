@@ -54,6 +54,18 @@ func (h *handler) closeAuction(ctx context.Context, auctionID int64) error {
 	if a.Status != "live" {
 		return nil // 既に処理済み
 	}
+	// status だけでなく ends_at も再チェックする。closeDueAuctions は対象idを集めてから
+	// (意図的に遅い)全件スキャンとbids非インデックス検索を挟んで1件ずつここへ渡すため、
+	// 収集と本チェックの間には数百msの間隔が空く。POST /initialize は明示idでテーブルを
+	// 丸ごと入れ替えるため、その間隔中に初期化が走ると、集めたidが「たまたま同じidを持つ、
+	// まだ期限が先の新しいオークション」を指すことがある。ここで ends_at を見ずに status だけを
+	// 見て進めると、期限前のオークションを誤って closed にしてしまう(過去に追いかけた
+	// Duplicate entry / live件数不一致の根本原因のひとつ)。ends_at が未来のオークションを
+	// 閉じるのは /initialize の有無に関わらずそもそも誤りなので、これは正当性の修正であり、
+	// 一見冗長に見えても外してはならない。
+	if a.EndsAt.After(time.Now().UTC()) {
+		return nil // まだ終了時刻に達していない
+	}
 
 	var top struct {
 		UserID int64 `db:"user_id"`

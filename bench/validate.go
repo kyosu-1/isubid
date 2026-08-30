@@ -95,6 +95,161 @@ func ValidateInitialAuctionList(list []AuctionSummary, base time.Time) error {
 	return nil
 }
 
+// ValidateAuctionListWithSnapshot は生成データ搭載時の一覧検証。
+//
+// Phase 3 の ValidateInitialAuctionList は期待 id 列(initialAuctionOrder)との
+// 完全一致で照合していたが、生成データが入ると live は合計60件(シード10 +
+// 採用スケール small の生成50)になり、シードと生成分が ends_at 順で交互に並ぶ。
+// 完全一致は同着やミリ秒単位のズレで壊れるため、次の性質に置き換える。
+//
+//	ends_at が非減少であること
+//
+// 一覧の ORDER BY ends_at ASC を ORDER BY id ASC に書き換える改変は、この
+// 非減少性のチェックだけで検出できる。シードの ends_at 順(initialAuctionOrder =
+// 4,2,8,6,10,1,3,5,7,9)と生成データの ends_at 順は、どちらも意図的に id 順と
+// 相関しないよう作られているため(生成側は initial-data/generate_test.go の
+// TestGeneratedLiveEndsAtNotCorrelatedWithID がそれを保証する)、ends_at 昇順の
+// 一覧が同時に id 昇順にもなることはない。したがって id 昇順への書き換えは必ず
+// このチェックに引っかかる。id 昇順である/でないを別の性質として直接
+// 検査する必要はなく、むしろ id 相関の前提が崩れた場合に正しい一覧を誤検出
+// しかねないため、あえて入れていない。
+func ValidateAuctionListWithSnapshot(list []AuctionSummary, snap *Snapshot, base time.Time) error {
+	want := int64(len(expectedInitialAuctions)) + snap.Counts.LiveAuctions
+	if int64(len(list)) != want {
+		return fmt.Errorf("GET /auctions: 件数が %d (期待: %d = シード %d + 生成 %d)",
+			len(list), want, len(expectedInitialAuctions), snap.Counts.LiveAuctions)
+	}
+
+	// ends_at が非減少
+	for i := 1; i < len(list); i++ {
+		if list[i].EndsAt.Before(list[i-1].EndsAt) {
+			return fmt.Errorf("GET /auctions: ends_at が昇順でない (index %d: id=%d %v の前が id=%d %v)",
+				i, list[i].ID, list[i].EndsAt, list[i-1].ID, list[i-1].EndsAt)
+		}
+	}
+
+	// 各行の中身を、シードは既存の期待値表、生成分はスナップショットと照合する
+	for _, a := range list {
+		if a.Status != "live" {
+			return fmt.Errorf("auction %d: status が %q (期待: live)", a.ID, a.Status)
+		}
+		if a.ID <= seedMaxAuctionID {
+			w, ok := expectedInitialAuctions[a.ID]
+			if !ok {
+				return fmt.Errorf("GET /auctions: 想定外のシードauction %d が live 一覧にいる", a.ID)
+			}
+			if err := checkListRow(a, w.Title, w.CategoryID, w.SellerID,
+				"seed_user_"+pad2(w.SellerID), w.CurrentPrice, w.BidCount,
+				base.Add(time.Duration(w.EndsAtOffset)*time.Second)); err != nil {
+				return err
+			}
+			continue
+		}
+		sa, ok := snap.ByID(a.ID)
+		if !ok {
+			return fmt.Errorf("GET /auctions: スナップショットに無い auction %d が live 一覧にいる", a.ID)
+		}
+		if err := checkListRow(a, sa.Title, sa.CategoryID, sa.SellerID, sa.SellerName,
+			sa.CurrentPrice, sa.BidCount,
+			base.Add(time.Duration(sa.EndsAtOffset)*time.Second)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// seedMaxAuctionID は webapp/sql/90_seed_phase1.sql が占める auction id の上端。
+// webapp/go/initialize.go の同名定数と揃えること。
+const seedMaxAuctionID = 12
+
+// seedMaxBidID は webapp/sql/90_seed_phase1.sql が占める bid id の上端。
+// initial-data/config.go の SeedMaxBidID と揃えること。reconcileAuction の
+// preexistingMaxBidID として、シードauctionとベンチ出品のlistingの両方に渡す
+// (どちらも走行開始前の入札はシードの8件しか持ち得ない)。生成auctionでは
+// seedMaxBidID + snapshot.Counts.Bids を渡す(bench/scenario.go Validation参照)。
+const seedMaxBidID = 8
+
+func checkListRow(a AuctionSummary, title string, categoryID, sellerID int64,
+	sellerName string, currentPrice, bidCount int64, wantEndsAt time.Time) error {
+	if a.Title != title {
+		return fmt.Errorf("auction %d: title が %q (期待: %q)", a.ID, a.Title, title)
+	}
+	if a.CategoryID != categoryID {
+		return fmt.Errorf("auction %d: category_id が %d (期待: %d)", a.ID, a.CategoryID, categoryID)
+	}
+	if a.Seller.ID != sellerID || a.Seller.Name != sellerName {
+		return fmt.Errorf("auction %d: seller が %+v (期待: id=%d name=%q)", a.ID, a.Seller, sellerID, sellerName)
+	}
+	if a.CurrentPrice != currentPrice {
+		return fmt.Errorf("auction %d: current_price が %d (期待: %d)", a.ID, a.CurrentPrice, currentPrice)
+	}
+	if a.BidCount != bidCount {
+		return fmt.Errorf("auction %d: bid_count が %d (期待: %d)", a.ID, a.BidCount, bidCount)
+	}
+	if d := a.EndsAt.Sub(wantEndsAt); d > endsAtTolerance || d < -endsAtTolerance {
+		return fmt.Errorf("auction %d: ends_at が %v (期待: %v ± %v)", a.ID, a.EndsAt, wantEndsAt, endsAtTolerance)
+	}
+	return nil
+}
+
+// ValidateSnapshotAuctionDetail は代表サンプルの詳細をスナップショットと照合する。
+//
+// スナップショットには closed オークションのサンプルも含まれるが、closed は
+// live 一覧に現れないため、この関数がそれらを検証する唯一の場所になる。
+// category_id・seller・ends_at を落とすと closed の誤りが一切検出できなく
+// なるため、ここで必ず照合する(ends_at は closed だと offset=0 で意味を
+// 持たないため live/upcoming のみ)。
+func ValidateSnapshotAuctionDetail(d *AuctionDetail, sa *SnapshotAuction, base time.Time) error {
+	if d.ID != sa.ID {
+		return fmt.Errorf("auction detail: id が %d (期待: %d)", d.ID, sa.ID)
+	}
+	if d.Title != sa.Title {
+		return fmt.Errorf("auction %d: title が %q (期待: %q)", d.ID, d.Title, sa.Title)
+	}
+	if d.Status != sa.Status {
+		return fmt.Errorf("auction %d: status が %q (期待: %q)", d.ID, d.Status, sa.Status)
+	}
+	if d.CategoryID != sa.CategoryID {
+		return fmt.Errorf("auction %d: category_id が %d (期待: %d)", d.ID, d.CategoryID, sa.CategoryID)
+	}
+	if d.Seller.ID != sa.SellerID || d.Seller.Name != sa.SellerName {
+		return fmt.Errorf("auction %d: seller が %+v (期待: id=%d name=%q)", d.ID, d.Seller, sa.SellerID, sa.SellerName)
+	}
+	if d.StartingPrice != sa.StartingPrice {
+		return fmt.Errorf("auction %d: starting_price が %d (期待: %d)", d.ID, d.StartingPrice, sa.StartingPrice)
+	}
+	if d.CurrentPrice != sa.CurrentPrice {
+		return fmt.Errorf("auction %d: current_price が %d (期待: %d)", d.ID, d.CurrentPrice, sa.CurrentPrice)
+	}
+	if d.BidCount != sa.BidCount {
+		return fmt.Errorf("auction %d: bid_count が %d (期待: %d)", d.ID, d.BidCount, sa.BidCount)
+	}
+	if int64(len(d.Bids)) != sa.BidCount {
+		return fmt.Errorf("auction %d: bids が %d件 (期待: %d件)", d.ID, len(d.Bids), sa.BidCount)
+	}
+	if sa.Status == "live" || sa.Status == "upcoming" {
+		wantEndsAt := base.Add(time.Duration(sa.EndsAtOffset) * time.Second)
+		if diff := d.EndsAt.Sub(wantEndsAt); diff > endsAtTolerance || diff < -endsAtTolerance {
+			return fmt.Errorf("auction %d: ends_at が %v (期待: %v ± %v)", d.ID, d.EndsAt, wantEndsAt, endsAtTolerance)
+		}
+	}
+	if sa.Status == "closed" {
+		if (d.WinnerID == nil) != (sa.WinnerID == nil) {
+			return fmt.Errorf("auction %d: winner_id が %v (期待: %v)", d.ID, d.WinnerID, sa.WinnerID)
+		}
+		if d.WinnerID != nil && *d.WinnerID != *sa.WinnerID {
+			return fmt.Errorf("auction %d: winner_id が %d (期待: %d)", d.ID, *d.WinnerID, *sa.WinnerID)
+		}
+		if (d.WinningPrice == nil) != (sa.WinningPrice == nil) {
+			return fmt.Errorf("auction %d: winning_price が %v (期待: %v)", d.ID, d.WinningPrice, sa.WinningPrice)
+		}
+		if d.WinningPrice != nil && sa.WinningPrice != nil && *d.WinningPrice != *sa.WinningPrice {
+			return fmt.Errorf("auction %d: winning_price が %d (期待: %d)", d.ID, *d.WinningPrice, *sa.WinningPrice)
+		}
+	}
+	return ValidateBidsInvariant(d.Bids)
+}
+
 // ValidateInitialAuctionDetail は初期状態の auction 1 詳細を照合する(入札で汚す前に呼ぶこと)。
 func ValidateInitialAuctionDetail(d *AuctionDetail) error {
 	if d.ID != 1 {

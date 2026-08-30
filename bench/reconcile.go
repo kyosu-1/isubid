@@ -4,18 +4,21 @@ import "fmt"
 
 // reconcileAuction は1オークションの詳細レスポンス d を、ベンチの台帳
 // (確定受理された accepted と、結果不明のまま残っている pending)および
-// シード時点の既知状態(seedCount/seedCurrent)と突き合わせ、違反を返す
+// 走行開始時点の既知状態(seedCount/seedCurrent)と突き合わせ、違反を返す
 // (空スライス = 問題なし)。
 //
 // ベンチ以外に書き込み手はいないため、あるオークションの入札集合は理論上
-// 「シード入札(id<=8) ∪ 台帳が確定受理した入札 ∪ 結果不明のpending」に
-// 一致するはずである。id>8 のうち accepted にも pending にも説明が付かない
-// 入札は「台帳にない入札」= 二重適用の疑いとしてcriticalにする。
+// 「走行開始前から存在する入札(id<=preexistingMaxBidID) ∪ 台帳が確定受理した入札 ∪
+// 結果不明のpending」に一致するはずである。preexistingMaxBidID より大きいidのうち
+// accepted にも pending にも説明が付かない入札は「台帳にない入札」= 二重適用の疑いと
+// してcriticalにする。preexistingMaxBidID は呼び出し側が渡す境界で、シードauction・
+// ベンチ出品のlistingでは seedMaxBidID(8)、生成auctionでは
+// seedMaxBidID + snapshot.Counts.Bids になる(bench/scenario.go 参照)。
 //
 // current_price も同様に、seedCurrent と accepted の最大額から決まる期待値
 // に一致しない場合、pending の中に current_price と同額のものがあれば
 // (in-flight commitの疑いとして)許容し、なければcriticalにする。
-func reconcileAuction(auctionID int64, d *AuctionDetail, seedCount, seedCurrent int64, accepted []AcceptedBid, pending []PendingBid) []error {
+func reconcileAuction(auctionID int64, d *AuctionDetail, seedCount, seedCurrent, preexistingMaxBidID int64, accepted []AcceptedBid, pending []PendingBid) []error {
 	var errs []error
 
 	byID := make(map[int64]Bid, len(d.Bids))
@@ -38,13 +41,13 @@ func reconcileAuction(auctionID int64, d *AuctionDetail, seedCount, seedCurrent 
 		}
 	}
 
-	// 2. id>8 の入札のうち、accepted で説明が付かないものは pending(未確定)と
-	//    突き合わせる。それでも説明が付かなければ「台帳にない入札」。
-	//    id<=8 (シード)の件数も同時に数える。
+	// 2. id>preexistingMaxBidID の入札のうち、accepted で説明が付かないものは
+	//    pending(未確定)と突き合わせる。それでも説明が付かなければ「台帳にない入札」。
+	//    id<=preexistingMaxBidID (走行開始前から存在する入札)の件数も同時に数える。
 	remainingPending := append([]PendingBid(nil), pending...)
 	var seedSeen int64
 	for _, b := range d.Bids {
-		if b.ID <= 8 {
+		if b.ID <= preexistingMaxBidID {
 			seedSeen++
 			continue
 		}
@@ -67,7 +70,7 @@ func reconcileAuction(auctionID int64, d *AuctionDetail, seedCount, seedCurrent 
 			auctionID, b.ID, b.Amount, b.User.ID))
 	}
 	if seedSeen != seedCount {
-		errs = append(errs, fmt.Errorf("auction %d: シード入札の件数が %d件 (期待: %d件、消失の疑い)", auctionID, seedSeen, seedCount))
+		errs = append(errs, fmt.Errorf("auction %d: 走行開始前から存在する入札の件数が %d件 (期待: %d件、消失の疑い)", auctionID, seedSeen, seedCount))
 	}
 
 	// 3. current_price = max(seedCurrent, acceptedの最大額) が原則。

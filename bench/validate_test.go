@@ -594,3 +594,180 @@ func TestValidateAuctionClosedIfDue(t *testing.T) {
 		t.Errorf("closed が拒否された: %v", err)
 	}
 }
+
+// 生成データ搭載時の一覧検証。Phase 3 の完全一致照合(initialAuctionOrder)は
+// live が約260件になると同着やミリ秒のズレで壊れるため、ends_at が非減少で
+// あることの1性質に置き換える。シード・生成データとも ends_at 順は id 順と
+// 相関しないよう作られているため(生成側は TestGeneratedLiveEndsAtNotCorrelatedWithID
+// が保証)、ORDER BY ends_at ASC を ORDER BY id ASC に書き換える改変はこの
+// 1性質だけで検出できる。
+func TestValidateAuctionListWithSnapshot(t *testing.T) {
+	base := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	snap := &Snapshot{
+		Counts: SnapshotCounts{LiveAuctions: 3},
+		Auctions: []SnapshotAuction{
+			{ID: 13, Title: "gen A", CategoryID: 1, SellerID: 21, SellerName: "gen_user_00021",
+				StartingPrice: 1000, CurrentPrice: 1000, BidCount: 0, Status: "live", EndsAtOffset: 30},
+			{ID: 14, Title: "gen B", CategoryID: 2, SellerID: 22, SellerName: "gen_user_00022",
+				StartingPrice: 2000, CurrentPrice: 2500, BidCount: 3, Status: "live", EndsAtOffset: 10},
+			{ID: 15, Title: "gen C", CategoryID: 3, SellerID: 23, SellerName: "gen_user_00023",
+				StartingPrice: 3000, CurrentPrice: 3000, BidCount: 0, Status: "live", EndsAtOffset: 50},
+		},
+	}
+	snap.byID = map[int64]*SnapshotAuction{}
+	for i := range snap.Auctions {
+		snap.byID[snap.Auctions[i].ID] = &snap.Auctions[i]
+	}
+
+	gen := func(id int64) AuctionSummary {
+		sa := snap.byID[id]
+		return AuctionSummary{
+			ID: sa.ID, Title: sa.Title, CategoryID: sa.CategoryID,
+			Seller:       User{ID: sa.SellerID, Name: sa.SellerName},
+			CurrentPrice: sa.CurrentPrice, BidCount: sa.BidCount, Status: "live",
+			EndsAt: base.Add(time.Duration(sa.EndsAtOffset) * time.Second),
+		}
+	}
+	seed := func(id int64) AuctionSummary {
+		w := expectedInitialAuctions[id]
+		return AuctionSummary{
+			ID: id, Title: w.Title, CategoryID: w.CategoryID,
+			Seller:       User{ID: w.SellerID, Name: "seed_user_" + pad2(w.SellerID)},
+			CurrentPrice: w.CurrentPrice, BidCount: w.BidCount, Status: "live",
+			EndsAt: base.Add(time.Duration(w.EndsAtOffset) * time.Second),
+		}
+	}
+
+	// ends_at 昇順にマージした正しい一覧を組み立てる。
+	// オフセット: gen14=10, seed4=12, seed2=20, seed8=28, gen13=30, seed6=36,
+	//             seed10=44, gen15=50, seed1=3600, seed3=3660, seed5=3720, seed7=3780, seed9=3840
+	// 合計13件 = シード10件 + 生成3件。
+	build := func() []AuctionSummary {
+		out := []AuctionSummary{gen(14), seed(4), seed(2), seed(8), gen(13), seed(6), seed(10), gen(15)}
+		for _, id := range initialAuctionOrder[5:] { // 3600秒台のシード5件
+			out = append(out, seed(id))
+		}
+		return out
+	}
+
+	if err := ValidateAuctionListWithSnapshot(build(), snap, base); err != nil {
+		t.Fatalf("正しい一覧が拒否された: %v", err)
+	}
+
+	// ends_at が降順に混ざると落ちる
+	bad := build()
+	bad[0], bad[1] = bad[1], bad[0]
+	if err := ValidateAuctionListWithSnapshot(bad, snap, base); err == nil {
+		t.Error("ends_at の順序違反が検出されなかった")
+	}
+
+	// id 昇順にソートされた一覧(ORDER BY id ASC への書き換え相当)は
+	// ends_at 非減少性に違反するため拒否される
+	byID := build()
+	sort.Slice(byID, func(i, j int) bool { return byID[i].ID < byID[j].ID })
+	if err := ValidateAuctionListWithSnapshot(byID, snap, base); err == nil {
+		t.Error("id 昇順ソート(ORDER BY id ASC 相当)が検出されなかった")
+	}
+
+	// 件数が合わないと落ちる
+	short := build()[:len(build())-1]
+	if err := ValidateAuctionListWithSnapshot(short, snap, base); err == nil {
+		t.Error("件数不一致が検出されなかった")
+	}
+
+	// 生成オークションのフィールドが改変されると落ちる
+	tampered := build()
+	for i := range tampered {
+		if tampered[i].ID == 14 {
+			tampered[i].CurrentPrice = 9999
+		}
+	}
+	if err := ValidateAuctionListWithSnapshot(tampered, snap, base); err == nil {
+		t.Error("生成オークションの current_price 改変が検出されなかった")
+	}
+}
+
+// snapshotDetailFixture は SnapshotAuction が正しく反映された AuctionDetail を組み立てる。
+// 個々のテストはここから1フィールドだけ改変して検証する。
+func snapshotDetailFixture(sa *SnapshotAuction, base time.Time, bids []Bid) *AuctionDetail {
+	return &AuctionDetail{
+		AuctionSummary: AuctionSummary{
+			ID:           sa.ID,
+			Title:        sa.Title,
+			CategoryID:   sa.CategoryID,
+			Seller:       User{ID: sa.SellerID, Name: sa.SellerName},
+			CurrentPrice: sa.CurrentPrice,
+			BidCount:     sa.BidCount,
+			EndsAt:       base.Add(time.Duration(sa.EndsAtOffset) * time.Second),
+			Status:       sa.Status,
+		},
+		StartingPrice: sa.StartingPrice,
+		WinnerID:      sa.WinnerID,
+		WinningPrice:  sa.WinningPrice,
+		Bids:          bids,
+	}
+}
+
+// closed オークションのサンプルは live 一覧に現れないため、この関数がその唯一の
+// 検証機会になる。category_id・seller・ends_at・winner系のnull不一致を
+// 落とすと closed の改変が一切検出できなくなるため、それぞれを個別に確認する。
+func TestValidateSnapshotAuctionDetail(t *testing.T) {
+	base := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+
+	liveSA := &SnapshotAuction{
+		ID: 20, Title: "gen live", CategoryID: 2, SellerID: 30, SellerName: "gen_user_00030",
+		StartingPrice: 1000, CurrentPrice: 1500, BidCount: 1, Status: "live", EndsAtOffset: 100,
+	}
+	liveBids := []Bid{{ID: 1, User: User{ID: 5, Name: "gen_user_00005"}, Amount: 1500, CreatedAt: base}}
+
+	// 正しい詳細は通る
+	ok := snapshotDetailFixture(liveSA, base, liveBids)
+	if err := ValidateSnapshotAuctionDetail(ok, liveSA, base); err != nil {
+		t.Errorf("正しい詳細が拒否された: %v", err)
+	}
+
+	// category_id の改変は落ちる
+	wrongCategory := snapshotDetailFixture(liveSA, base, liveBids)
+	wrongCategory.CategoryID = 99
+	if err := ValidateSnapshotAuctionDetail(wrongCategory, liveSA, base); err == nil || !strings.Contains(err.Error(), "category_id") {
+		t.Errorf("category_id の改変が検出されなかった: %v", err)
+	}
+
+	// seller の改変は落ちる
+	wrongSeller := snapshotDetailFixture(liveSA, base, liveBids)
+	wrongSeller.Seller.Name = "hacker"
+	if err := ValidateSnapshotAuctionDetail(wrongSeller, liveSA, base); err == nil || !strings.Contains(err.Error(), "seller") {
+		t.Errorf("seller の改変が検出されなかった: %v", err)
+	}
+
+	// live オークションの ends_at が許容幅を超えてずれると落ちる
+	wrongEndsAt := snapshotDetailFixture(liveSA, base, liveBids)
+	wrongEndsAt.EndsAt = wrongEndsAt.EndsAt.Add(30 * time.Second)
+	if err := ValidateSnapshotAuctionDetail(wrongEndsAt, liveSA, base); err == nil || !strings.Contains(err.Error(), "ends_at") {
+		t.Errorf("ends_at の許容幅外ズレが検出されなかった: %v", err)
+	}
+
+	// closed: winning_price が期待どおりにあるスナップショットに対し、
+	// 応答側が null を返すと落ちる(winner_id と非対称にしない)
+	winnerID := int64(7)
+	winningPrice := int64(5000)
+	closedSA := &SnapshotAuction{
+		ID: 21, Title: "gen closed", CategoryID: 1, SellerID: 31, SellerName: "gen_user_00031",
+		StartingPrice: 2000, CurrentPrice: 5000, BidCount: 2, Status: "closed", EndsAtOffset: 0,
+		WinnerID: &winnerID, WinningPrice: &winningPrice,
+	}
+	closedBids := []Bid{
+		{ID: 2, User: User{ID: winnerID, Name: "gen_user_00007"}, Amount: winningPrice, CreatedAt: base},
+		{ID: 1, User: User{ID: 8, Name: "gen_user_00008"}, Amount: 4500, CreatedAt: base.Add(-time.Hour)},
+	}
+	closedOK := snapshotDetailFixture(closedSA, base, closedBids)
+	if err := ValidateSnapshotAuctionDetail(closedOK, closedSA, base); err != nil {
+		t.Errorf("正しいclosed詳細が拒否された: %v", err)
+	}
+
+	closedNullPrice := snapshotDetailFixture(closedSA, base, closedBids)
+	closedNullPrice.WinningPrice = nil
+	if err := ValidateSnapshotAuctionDetail(closedNullPrice, closedSA, base); err == nil || !strings.Contains(err.Error(), "winning_price") {
+		t.Errorf("winning_price の null 化が検出されなかった: %v", err)
+	}
+}

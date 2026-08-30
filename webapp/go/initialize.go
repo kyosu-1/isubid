@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -46,26 +48,165 @@ func applyRelativeSchedule(ctx context.Context, db *sqlx.DB, base time.Time) err
 	return nil
 }
 
+// seedMaxAuctionID は webapp/sql/90_seed_phase1.sql が占める auction id の上端。
+// 生成データは id 13 から採番される(initial-data/config.go の SeedMaxAuctionID と揃えること)。
+const seedMaxAuctionID = 12
+
+// generatedEpochLiteral は生成データが live/upcoming の時刻を保持する固定基準。
+// initial-data/generate.go の generatedEpoch と一致させること。
+//
+// 意図的に未来日付にしてある(過去日付に「整地」してはいけない)。ダンプ投入直後、
+// このUPDATEが走るより前の一瞬、生成 live オークションの ends_at はこのエポック起点の
+// オフセットそのままの値になる。エポックが過去日付だと、その一瞬を runAuctionCloser
+// (毎秒 status='live' AND ends_at<=NOW(6) を閉じるバッチ) が拾って全件を期限切れとみなし、
+// won 通知を auto-increment id で挿入してしまう。すると notifications の採番カウンタが
+// 1を超え、後続の 94_notifications.sql が id=1 から明示挿入する際に Duplicate entry で
+// 衝突する(確率的に発生する初期化失敗)。
+const generatedEpochLiteral = "2100-01-01 00:00:00"
+
+// applyGeneratedSchedule は生成データの live/upcoming を base 基準の時刻へ付け替える。
+//
+// WHERE id > seedMaxAuctionID が必須である。シード(id 1〜12)は applyRelativeSchedule で
+// 既に「現在時刻＋オフセット」の絶対時刻になっており、ここで固定エポック起点の変換を
+// 当てると TIMESTAMPDIFF が約8億3600万秒となり ends_at が2052年へ飛ぶ。
+//
+// closed は過去データなので書き換えない(走行時刻に依存しない)。
+//
+// bids.created_at にも auctions と同じ付け替えが必要である。GET /auctions/:id は
+// bids を ORDER BY created_at DESC, id DESC で返し、ベンチの単調性検査
+// (reconcileAuction 経由の ValidateBidsInvariant)はその並び順を受理順とみなして
+// amount の単調性を検証する。generatedEpoch が過去日付(旧2000-01-01)だった間は、
+// 生成bidのcreated_atが常に実時刻より過去になるため、走行中に入る新規bid
+// (created_atはbidsのDEFAULT CURRENT_TIMESTAMP(6)で実時刻)は常にDESC順で先頭に来て
+// 「たまたま」整合していた。generatedEpochをDuplicate entry対策で未来日付
+// (2100-01-01)に変更したことで、この偶然の整合が崩れる: 生成bidのcreated_atが
+// 実時刻より未来のままだと、走行中の新規bidはDESC順で末尾に回り、amountの
+// 単調性が壊れる。auctionsと同じ基準(generatedEpochLiteral)・同じシフト量で
+// bids.created_atも書き換えることで、この崩れを防ぐ。
+//
+// bids に auction_id のインデックスは無い(意図的、他クエリと同じ理由でそのまま)ため、
+// このUPDATEはbids全体を1回フルスキャンする。対象になるのはlive/upcoming分の生成bidのみ
+// (small規模で約1,400件、full規模でも6,000件未満)であり、フルスキャン1回のコストは許容する。
+//
+// 実行順序は bids UPDATE → auctions UPDATE の順を厳守すること(自然に見える
+// auctions→bidsの順に「整地」してはいけない)。auctions UPDATEが先にcommitすると、
+// 最も早い生成live auctionは base+15秒(最小のlive offset)で確定し、その瞬間から
+// runAuctionCloser(context.Background()で常時稼働、毎秒 status='live' AND
+// ends_at<=NOW(6) を閉じる)がそれを拾える状態になる。bids UPDATEはbids全体の
+// フルスキャンで、small規模で30,000行・full規模で300,000行を読むため、この
+// ウィンドウの間に完走しない可能性がある。closerが先にauctionをclosedへ倒すと、
+// bids UPDATEのWHERE句(a.status IN ('live','upcoming'))がそのauctionのbidを
+// 静かにスキップし、closed化されたauctionのbidだけ2100年のcreated_atのまま
+// 取り残される——Defect Cが防ごうとしていた状態に、今度は逆方向から到達してしまう。
+// bids UPDATEを先に実行すれば、その実行中はauctionsがまだ2100年帯のends_atの
+// ままなのでcloserはどのauctionにもマッチしようがなく、レースそのものが成立しない。
+// 両UPDATEとも同じbase・同じgeneratedEpochLiteralを使うため計算結果は順序に依らず
+// 同一だが、レースの有無は順序で決まる。
+func applyGeneratedSchedule(ctx context.Context, db *sqlx.DB, base time.Time) error {
+	if _, err := db.ExecContext(ctx,
+		"UPDATE bids b JOIN auctions a ON a.id = b.auction_id SET "+
+			"b.created_at = DATE_ADD(?, INTERVAL TIMESTAMPDIFF(SECOND, ?, b.created_at) SECOND) "+
+			"WHERE a.id > ? AND a.status IN ('live','upcoming')",
+		base, generatedEpochLiteral, seedMaxAuctionID); err != nil {
+		return err
+	}
+	_, err := db.ExecContext(ctx,
+		"UPDATE auctions SET "+
+			"starts_at = DATE_ADD(?, INTERVAL TIMESTAMPDIFF(SECOND, ?, starts_at) SECOND), "+
+			"ends_at   = DATE_ADD(?, INTERVAL TIMESTAMPDIFF(SECOND, ?, ends_at)   SECOND) "+
+			"WHERE id > ? AND status IN ('live','upcoming')",
+		base, generatedEpochLiteral, base, generatedEpochLiteral, seedMaxAuctionID)
+	return err
+}
+
+// initScriptTimeout は loadViaInitScript が init.sh に許す上限時間。
+// リクエストのキャンセルとは無関係な、この処理専用の打ち切りである。
+const initScriptTimeout = 10 * time.Minute
+
+// loadViaInitScript は init.sh に投入を委譲する(mysql クライアントでのバルクロード)。
+//
+// リクエストの context は受け取らない。exec.CommandContext が Kill するのは
+// 直接の子(sh)だけで、init.sh の run() がダンプファイルごとに起動する mysql の
+// 孫プロセスには届かない。dev/nginx.conf は proxy_read_timeout を設定しておらず
+// 既定の60秒でnginxが上流接続を切るため、大きいスケールのロードはそれを
+// 超えうる。そこで r.Context() をここに渡すと、切断でキャンセルされた瞬間に
+// sh だけが死んで mysql が生き残り、デタッチされたまま書き込みを続ける。
+// POST /initialize は 00_schema.sql の DROP TABLE から始まる破壊的な全入れ替えで、
+// 完走すれば一貫した状態になるが、志半ばで打ち切られたロードはオーファン化した
+// mysql が次の初期化の新テーブルに書き込みを続け、競合を起こす。そのため
+// 打ち切りはリクエストから独立させ、十分に長い時間(initScriptTimeout)を許す。
+func loadViaInitScript(sqlDir string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), initScriptTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", filepath.Join(sqlDir, "init.sh"))
+	cmd.Env = os.Environ()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("init.sh: %w: %s", err, out)
+	}
+	return nil
+}
+
+// loadViaGo は Go でスキーマとシードだけを流す(生成データ非搭載時)。
+// ホストに mysql クライアントが無い環境でも webapp/go のテストが動くよう、この経路を残す。
+func loadViaGo(ctx context.Context, db *sqlx.DB, sqlDir string) error {
+	for _, f := range initSQLFiles {
+		b, err := os.ReadFile(filepath.Join(sqlDir, f))
+		if err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, string(b)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (h *handler) postInitialize(w http.ResponseWriter, r *http.Request) {
 	sqlDir := getEnv("ISUBID_SQL_DIR", "../sql")
+	generatedDir := os.Getenv("ISUBID_INITIAL_DATA_DIR")
+
 	db, err := sqlx.Open("mysql", dbDSN(true))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	defer db.Close()
-	for _, f := range initSQLFiles {
-		b, err := os.ReadFile(filepath.Join(sqlDir, f))
-		if err != nil {
+
+	if generatedDir != "" {
+		if err := loadViaInitScript(sqlDir); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if _, err := db.ExecContext(r.Context(), string(b)); err != nil {
+	} else {
+		if err := loadViaGo(r.Context(), db, sqlDir); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
-	if err := applyRelativeSchedule(r.Context(), db, time.Now().UTC()); err != nil {
+
+	base := time.Now().UTC()
+	// 実行順序は applyGeneratedSchedule → applyRelativeSchedule の順を厳守すること
+	// (自然に見える「シードを先に整える」順に入れ替えてはいけない)。
+	// applyRelativeSchedule は seed auction 4 の ends_at を base+12秒に倒し、
+	// runAuctionCloser(1Hz、常時稼働)の対象になり得る最短の導火線を今すぐ着火する。
+	// applyGeneratedSchedule は bids 全体のフルスキャン UPDATE を含み、small規模で
+	// 約30,000行・full規模で約300,000行を読むため、完走に数百ms〜数秒かかりうる。
+	// 導火線を先に着火してからこの長いスキャンを走らせると、スキャンがもし12秒を
+	// 超えた場合に closer がシードのlive/upcomingオークションを食い荒らし、
+	// Prepareがseed件数不一致でfalse-FAILする。両関数は disjoint な id範囲
+	// (id<=12 / id>12)に作用し、どちらも同じ base から計算するため計算結果は
+	// 実行順序に依存しない。したがって生成データの長いスキャンを先に終わらせ、
+	// 導火線は最後に着火するこの順序へ入れ替えても結果は変わらず、安全余裕だけが
+	// 広がる(生成データ投入時の最短導火線は generatedEpoch 由来の base+15秒であり、
+	// 後続のシード側の主キー更新数件はマイクロ秒オーダーで終わる)。
+	if generatedDir != "" {
+		if err := applyGeneratedSchedule(r.Context(), db, base); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if err := applyRelativeSchedule(r.Context(), db, base); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

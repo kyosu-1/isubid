@@ -20,7 +20,18 @@ func main() {
 	watchers := flag.Int("watchers", 4, "ウォッチャーworker数")
 	notifiers := flag.Int("notifiers", 2, "通知確認worker数")
 	sellers := flag.Int("sellers", 2, "出品者worker数")
+	snapshotPath := flag.String("snapshot", "", "初期データの正解スナップショット(空なら生成データ非搭載モード)")
 	flag.Parse()
+
+	var snap *Snapshot
+	if *snapshotPath != "" {
+		var err error
+		snap, err = LoadSnapshot(*snapshotPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
 
 	s := &Scenario{
 		Target:      *target,
@@ -31,6 +42,7 @@ func main() {
 		Sellers:     *sellers,
 		Listings:    newListingPubSub(),
 		Ledger:      NewLedger(),
+		Snapshot:    snap,
 	}
 
 	b, err := isucandar.NewBenchmark(

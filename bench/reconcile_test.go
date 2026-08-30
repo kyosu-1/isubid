@@ -123,7 +123,7 @@ func TestReconcileAuction(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			errs := reconcileAuction(1, tc.d, tc.seedCount, tc.seedPrice, tc.accepted, tc.pending)
+			errs := reconcileAuction(1, tc.d, tc.seedCount, tc.seedPrice, 8, tc.accepted, tc.pending)
 			if len(errs) != tc.wantErrLen {
 				t.Errorf("reconcileAuction() = %v errors (%v), want %d", len(errs), errs, tc.wantErrLen)
 			}
@@ -146,9 +146,34 @@ func TestReconcileAuctionPendingConsumedOncePerMatch(t *testing.T) {
 		},
 	}
 	pending := []PendingBid{{AuctionID: 1, UserID: 5, Amount: 1600}}
-	errs := reconcileAuction(1, d, 0, 1000, nil, pending)
+	errs := reconcileAuction(1, d, 0, 1000, 8, nil, pending)
 	if len(errs) != 2 {
 		t.Fatalf("reconcileAuction() = %v errors (%v), want exactly 2 (one bid unexplained + monotonic violation from equal amounts)", len(errs), errs)
+	}
+}
+
+// preexistingMaxBidID は生成データ向けに境界を動かせる引数であることを確認する
+// (以前は id<=8 が決め打ちだった)。同じ入札集合でも境界次第で判定が変わるはず。
+func TestReconcileAuctionPreexistingBoundaryIsParameterized(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	d := &AuctionDetail{
+		AuctionSummary: AuctionSummary{ID: 1, CurrentPrice: 5000},
+		Bids: []Bid{
+			{ID: 100, User: User{ID: 5}, Amount: 5000, CreatedAt: t0},
+		},
+	}
+
+	// 境界を100まで上げると、id=100は「走行開始前から存在する入札」として扱われ、
+	// 台帳(accepted/pending)に説明がなくてもcriticalにならない。
+	errs := reconcileAuction(1, d, 1, 5000, 100, nil, nil)
+	if len(errs) != 0 {
+		t.Fatalf("preexistingMaxBidID=100 なのに id=100 が台帳にない入札として扱われた: %v", errs)
+	}
+
+	// 同じ入札集合でも境界を8のままにすると、id=100は説明の付かない入札として検出される。
+	errs = reconcileAuction(1, d, 0, 5000, 8, nil, nil)
+	if len(errs) != 1 {
+		t.Fatalf("preexistingMaxBidID=8 なら id=100 は台帳にない入札として検出されるはず: got %d errs (%v)", len(errs), errs)
 	}
 }
 
