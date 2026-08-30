@@ -70,10 +70,11 @@ func TestInitializeSetsRelativeEndsAt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer res.Body.Close()
-	var list []auctionSummaryJSON
-	if err := json.NewDecoder(res.Body).Decode(&list); err != nil {
+	var l auctionListJSON
+	if err := json.NewDecoder(res.Body).Decode(&l); err != nil {
 		t.Fatal(err)
 	}
+	list := l.Auctions
 
 	wantOrder := []int64{4, 2, 8, 6, 10, 1, 3, 5, 7, 9}
 	if len(list) != len(wantOrder) {
@@ -112,12 +113,12 @@ func TestInitializeWithoutGeneratedData(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer res.Body.Close()
-	var list []auctionSummaryJSON
-	if err := json.NewDecoder(res.Body).Decode(&list); err != nil {
+	var l auctionListJSON
+	if err := json.NewDecoder(res.Body).Decode(&l); err != nil {
 		t.Fatal(err)
 	}
 	// シードの live は10件のまま
-	if len(list) != 10 {
-		t.Fatalf("live = %d件, want 10 (生成データが混入している)", len(list))
+	if len(l.Auctions) != 10 {
+		t.Fatalf("live = %d件, want 10 (生成データが混入している)", len(l.Auctions))
 	}
 }
