@@ -517,7 +517,10 @@ RESULT: PASS
   `medium`/`full` の生成物(`medium` 約10MB、`full` 約25MB)はいずれもリポジトリに
   コミットしていない(採用スケールではないため)。将来 `full` を採用する場合は
   50MB前後に収まる見込みだが、その時点で再度サイズを確認すること。
-- **持ち越し7: Prepareに、gate2の12秒窓とは別の未文書化された締切がもう1つある**。
+- **持ち越し7: Prepareに、gate2の12秒窓とは別の未文書化された締切がもう1つある**
+  (**→ 4-B で対応済み**。Task 7 が候補案(a)を採り、`ValidateSnapshotAuctionDetail` に
+  「`ends_at` が実際に到来していれば `closed` を受理する」許容を入れた。コミット
+  `5fc81c4`。以下は当時の記述をそのまま残す)。
   `BuildSnapshot` は詳細検証用に先頭10件のliveオークションをidで抽出するが、
   live のオフセットはシャッフルされているためこれらは任意のオフセットに着地し
   (コミット済みsnapshotで最小21秒、ジェネレータ設計上は最小15秒)、しかもサンプル
@@ -575,3 +578,500 @@ RESULT: PASS
   行うため、その間に走る `00_schema.sql` の `DROP TABLE auctions` はメタデータロック待ちに入る。
   正しさは壊れず、`initScriptTimeout`(10分)で上限は付いているが、持ち越し11のレースと
   隣接する挙動なので、closer に手を入れる回に併せて見ておくこと。
+
+## 4-B 一覧のページネーションと検索
+
+### 設計判断
+
+- **レスポンス形を `{auctions, total_count, has_next}` にした理由**: 4-A まで
+  `GET /auctions` は live 全件(60件)を1レスポンスで返しており、1リクエストあたりの
+  N+1 コストが際限なく初期データ規模に比例していた。`full` では実際にこれが原因で
+  一覧が60秒間まるごとタイムアウトしている(4-A 持ち越し3)。ページネーションを入れる
+  にあたり、`total_count` と `has_next` を両方返すのは冗長に見えるが、両方あるからこそ
+  **単一レスポンスの中で内部矛盾を検査できる**(`has_next == (page*20 < total_count)`、
+  `total_count >= len(auctions)`、`len(auctions) <= 20`)。この自己整合性が改悪4
+  (`total_count` を `len(summaries)` にすり替える)を1リクエストで捕まえる仕掛けに
+  なっている。カーソルページネーションではこの検査が作れない。
+- **`total_count` がトランザクションを必要とする関係**: `COUNT(*)` と本体の `SELECT` を
+  別々に読むと、その間に入札や `runAuctionCloser` の close が commit された場合、
+  「`total_count` は 137 なのに全ページ合計は 138 件」が**正しい実装でも**起きる。
+  ベンチはこれを不整合として報告するので false-FAIL になる。よって `getAuctions` は
+  COUNT と SELECT を単一トランザクション(MySQL デフォルトの REPEATABLE READ)の
+  同一スナップショットから読む。**意図的なN+1構成(`summarize` が1件あたり3クエリ)は
+  そのまま維持し、読み取り一貫性だけを確保している。** 同じ理由で `getAuction` も
+  トランザクション化した(`bid_count` と `bids` 件数の食い違い防止)。
+- **Load の絞り込み検査は一方向である**: 走行中の一覧・検索レスポンスに対しては
+  「述語に合致しない行が返ったら異常」しか見ない。「期待集合にあるのに返ってこない」は
+  走行中なら正常でありうる(closed になった、別ページへ移った)ため検査しない。
+  「返さなすぎ」を捕まえるのは静穏期の Prepare の仕事、という分業にしている
+  (`bench/load.go` の `watcherIteration` 内コメント参照)。
+- **Load のプローブが title 専用に限られる理由**: 一覧レスポンスの `auctionSummary` には
+  `description` が無い。したがって走行中は「返ってきた行の title がプローブ語を含むか」
+  しか検査できず、description 側で一致した行を正しく返す実装を誤って critical FAIL に
+  してしまう。そのため Load の `q` 分岐は `probeTitleOnly`(`ワークス`)だけを使い、
+  かつ **ベンチ自身が出品するオークションの title / description にプローブ語が
+  絶対に混入しない**ことを安全条件としている。この結合はコード上どこにも書かれない
+  暗黙の依存なので、`bench/validate_test.go` の `TestSearchProbesAreClassified` で
+  固定している(`sellerDescription` にプローブ語を1つ足すだけでこのテストが落ちる)。
+- **プローブ語は「語中に出る部分文字列」でなければならない**: 当初スペックが選んだ
+  `エルゴフロー` / `職人` はそれぞれ title / description の**先頭**に必ず現れるため、
+  `LIKE '%q%'` を `LIKE 'q%'` に変える前方一致改悪が素通りしていた(contains 5件 =
+  prefix 5件、contains 13件 = prefix 13件が実DBで確認された)。Task 6 で
+  `ワークス`(`メッシュワークス` の index 3)と `手作業`(`職人による手作業の仕上げ` の
+  index 5)へ差し替え、「プローブが先頭に来ないこと」をテストで固定した。
+- **AND結合プローブに `category=2` を選んだ理由**: `probeTitleOnly` に一致する live の
+  カテゴリ内訳は `{1:1, 2:2, 3:2}`。`category=1` は1件しかなく、しかもその1件は
+  `ends_at` +27秒で、許容幅を含めると走行開始から20秒強で期待件数が 0 になる
+  ——「常に空を返すアプリ」が素通りする。`category=2` の2件は +159秒 / +3859秒 で
+  安全側に厚い。
+- **Prepare の照合ルールを「件数の厳密一致」から「id集合 + 期限切れ許容」へ緩めた**:
+  全ページ走査でリクエスト数が増え、走査中に期待集合の要素が closed へ落ちる窓が
+  広がったため。正確なルールは、E = Prepare 開始時の期待集合、D = 走査中に期限が
+  到来した部分集合、R = 返ってきた行として:
+  - `R ⊆ E`(期待集合外の id が返ったら常に異常)
+  - `E \ D ⊆ R`(期限未到来のものが欠けていたら異常)
+  - `|E| - |D| ≤ total_count ≤ |E|`
+  - **`len(R) == total_count` の厳密一致は捨てる**(走査途中で期限到来すると
+    `len(R)` が `total_count` を上回るため)
+
+  検出力が落ちないことは改悪4・改悪6の実測で確認している(下記ゲート4)。
+
+### ゲート1(`POST /initialize` を3回連続)
+
+`docker compose -f dev/compose.yaml down -v` でボリュームごと作り直し、HEAD で
+`build app` した状態から測定。
+
+```
+=== run 1 ===
+http_code=200
+curl -s -o /dev/null -w 'http_code=%{http_code}\n' -X POST  -d '{}'  0.01s user 0.01s system 3% cpu 0.334 total
+=== run 2 ===
+http_code=200
+curl -s -o /dev/null -w 'http_code=%{http_code}\n' -X POST  -d '{}'  0.01s user 0.01s system 4% cpu 0.333 total
+=== run 3 ===
+http_code=200
+curl -s -o /dev/null -w 'http_code=%{http_code}\n' -X POST  -d '{}'  0.01s user 0.01s system 3% cpu 0.340 total
+```
+
+(シェルが zsh のため `time` の出力形式が 4-A の `real 0.37` 形式と異なる。`total` の
+値が 4-A の `real` に相当する。)
+
+→ 3回とも HTTP 200、0.333〜0.340s。15秒基準に対し十分な余裕。**PASS**。
+
+### ゲート2(`-prepare-only` を3回連続、6秒基準)
+
+`go run` のコンパイル時間が計測に混ざらないよう、事前に `go build -o /dev/null .` で
+ビルドキャッシュを温めてから測定した(4-A も同一セッション内の連続実行なので同条件)。
+
+```
+=== run 1 ===
+PREPARE: PASS
+go run . -target http://localhost:8080 -snapshot  -prepare-only  0.13s user 0.31s system 24% cpu 1.791 total
+=== run 2 ===
+PREPARE: PASS
+go run . -target http://localhost:8080 -snapshot  -prepare-only  0.13s user 0.34s system 27% cpu 1.747 total
+=== run 3 ===
+PREPARE: PASS
+go run . -target http://localhost:8080 -snapshot  -prepare-only  0.12s user 0.29s system 23% cpu 1.749 total
+```
+
+→ 3連続 `PREPARE: PASS`、1.747〜1.791s。**6秒基準内。PASS**。
+
+事前の懸念(ページ走査 + 検索プローブでリクエストが +14 程度増えるため 6秒を超えうる)は
+実測では顕在化しなかった。4-A の small が 1.62〜2.63s だったので、むしろ振れ幅が縮んで
+いる。ページネーションで1リクエストあたりの N+1 コストが約1/8になった効果が、
+リクエスト本数の増加を相殺している。**基準は 6秒のまま維持する。**
+
+### ゲート3(60秒走行、通常のwebapp)
+
+```
+SCORE: 19086  (raw 19086, penalty 0)
+  GET /auctions            : 2078回 (2078点)
+  GET /auctions (検索)       : 1566回 (3132点)
+  GET /auctions/:id        : 3627回 (3627点)
+  POST /auctions/:id/bids  : 1136回 (5680点)
+  GET /auctions/:id/bids   : 1136回 (1136点)
+  GET /notifications       : 504回 (1008点)
+  POST /auctions           : 485回 (2425点)
+ERRORS: 0件 (critical: 0件)
+RESULT: PASS
+```
+
+内訳の検算(4-A 持ち越し2 を踏まえ `RESULT: PASS` を信用せず目視):
+2078×1 + 1566×2 + 3627×1 + 1136×5 + 1136×1 + 504×2 + 485×5
+= 2078 + 3132 + 3627 + 5680 + 1136 + 1008 + 2425 = **19086 = raw**。一致。
+
+**採点対象7本すべてが0回でない**ことを確認。→ **PASS**。
+
+### ゲート4(改悪7種)
+
+各改悪は1つずつ投入し、`docker compose -f dev/compose.yaml build app && up -d` で
+再ビルドしてから60秒走行を実行、その後 `git checkout` で復元して再ビルドした。
+改悪1〜6は `webapp/go/auctions.go`、改悪7は `webapp/go/bids.go`。
+
+| # | 改悪 | 結果 | 検出したエラー |
+|---|---|---|---|
+| 1 | `like := "%" + escapeLike(q.Q) + "%"` → `escapeLike(q.Q) + "%"`(前方一致化) | **FAIL(検出)** | `prepare: GET /auctions?q=ワークス (title専用プローブ): 期限前(...)の auction 1018 が結果に含まれていない` |
+| 2 | `cond += " AND (title LIKE ? OR description LIKE ?)"` / `args = append(args, like, like)` → `cond += " AND (title LIKE ?)"` / `args = append(args, like)` | **FAIL(検出)** | `prepare: GET /auctions?q=手作業 (description専用プローブ): 期限前(...)の auction 1054 が結果に含まれていない` |
+| 3 | `cond += " AND category_id = ?"` → `cond += " OR category_id = ?"` | **FAIL(検出)** | `prepare: GET /auctions?page=1: live以外が混入 (id=728 status="closed")` |
+| 4 | `TotalCount: total` → `TotalCount: int64(len(summaries))` | **FAIL(検出)** | `prepare: GET /auctions?page=1: has_next が true (期待: false, total_count=20)` |
+| 5 | `ORDER BY ends_at ASC, id ASC` → `ORDER BY id ASC` | **FAIL(検出)** | `prepare: GET /auctions?page=1: ends_at が昇順でない (index 1: id=2 ... の前が id=1 ...)` |
+| 6 | `LIMIT ? OFFSET ?` とその引数を削除 | **FAIL(検出)** | `prepare: GET /auctions?page=1: 60件 (期待: 20件以下)` |
+| 7 | `postBid` の `SELECT ... FOR UPDATE` から `FOR UPDATE` を削除 | **FAIL(検出、1回目)** | `load: critical: auction 1088: bids の金額が単調増加違反 ...` ほか63件 |
+
+**7種すべてが検出された。ゲート4は PASS。**
+
+改悪1〜6はいずれも Prepare 段階で落ちるため、採点は全項目0回・`SCORE: 0` になる。
+改悪7だけは走行を完走したうえで critical を積む。以下、実出力の抜粋。
+
+**改悪1(前方一致化)**
+
+```diff
+-		like := "%" + escapeLike(q.Q) + "%"
++		like := escapeLike(q.Q) + "%"
+```
+
+投入直後に直接確認したところ、`GET /auctions?q=ワークス` の `total_count` が
+5 → 0 に変わっていた(復元後は 5 に戻ることも確認済み)。
+
+```
+ERR: prepare: GET /auctions?q=ワークス (title専用プローブ): 期限前(2026-08-30 13:22:32.337588 +0000 UTC)の auction 1018 が結果に含まれていない
+SCORE: 0  (raw 0, penalty 1)
+RESULT: FAIL
+```
+
+**Task 6 でプローブ語を語中一致へ差し替えた効果がここで確認できた。**
+旧プローブ(`エルゴフロー` / `職人`)のままだったらこの改悪は素通りしていた。
+
+**改悪2(`OR description LIKE ?` を削る)**
+
+```diff
+-		cond += " AND (title LIKE ? OR description LIKE ?)"
+-		args = append(args, like, like)
++		cond += " AND (title LIKE ?)"
++		args = append(args, like)
+```
+
+```
+ERR: prepare: GET /auctions?q=手作業 (description専用プローブ): 期限前(2026-08-30 13:24:58.44684 +0000 UTC)の auction 1054 が結果に含まれていない
+SCORE: 0  (raw 0, penalty 1)
+RESULT: FAIL
+```
+
+**改悪3(`AND category_id` → `OR category_id`)**
+
+```diff
+-		cond += " AND category_id = ?"
++		cond += " OR category_id = ?"
+```
+
+```
+ERR: prepare: GET /auctions?page=1: live以外が混入 (id=728 status="closed")
+SCORE: 0  (raw 0, penalty 1)
+RESULT: FAIL
+```
+
+**検出したのは AND結合プローブではなく、その手前の `GET /auctions?category=1` である。**
+`status = 'live' OR category_id = 1` は closed のカテゴリ1を全部拾うので、
+期待集合の照合に到達する前に `ValidatePagedListShape` の「live以外が混入」で落ちた。
+DB で直接確認したところ `id=728` は `category_id=1, status=closed` であり、この解釈と
+一致する。**検出はされるが、検出経路はブリーフの想定(AND結合プローブでの集合不一致)
+とは異なる**ため、AND結合プローブそのものの検出力は今回の測定では独立に確認できて
+いない(下記の軽微な持ち越しへ)。
+
+**改悪4(`TotalCount` を返却件数にすり替える)**
+
+```diff
+-		TotalCount: total,
++		TotalCount: int64(len(summaries)),
+```
+
+```
+ERR: prepare: GET /auctions?page=1: has_next が true (期待: false, total_count=20)
+SCORE: 0  (raw 0, penalty 1)
+RESULT: FAIL
+```
+
+`HasNext` の式は `total`(本物のCOUNT)を見たままなので、単一レスポンス内の
+自己整合性検査が即座に矛盾を検出した。**Task 6 で件数の厳密一致を捨てても
+この改悪が捕まることの、実機での裏取りになっている。**
+
+**改悪5(`ORDER BY ends_at ASC, id ASC` → `ORDER BY id ASC`)**
+
+```diff
+-			" ORDER BY ends_at ASC, id ASC LIMIT ? OFFSET ?", pageArgs...); err != nil {
++			" ORDER BY id ASC LIMIT ? OFFSET ?", pageArgs...); err != nil {
+```
+
+```
+ERR: prepare: GET /auctions?page=1: ends_at が昇順でない (index 1: id=2 2026-08-30 13:24:53.298517 +0000 UTC の前が id=1 2026-08-30 14:24:33.298517 +0000 UTC)
+SCORE: 0  (raw 0, penalty 1)
+RESULT: FAIL
+```
+
+**改悪6(`LIMIT ? OFFSET ?` を削る)**
+
+```diff
+-	pageArgs := append(append([]any{}, args...), auctionsPerPage, (q.Page-1)*auctionsPerPage)
++	pageArgs := append([]any{}, args...)
+ 	var rows []auctionRow
+ 	if err := tx.SelectContext(r.Context(), &rows,
+ 		"SELECT "+auctionColumns+" FROM auctions WHERE "+cond+
+-			" ORDER BY ends_at ASC, id ASC LIMIT ? OFFSET ?", pageArgs...); err != nil {
++			" ORDER BY ends_at ASC, id ASC", pageArgs...); err != nil {
+```
+
+```
+ERR: prepare: GET /auctions?page=1: 60件 (期待: 20件以下)
+SCORE: 0  (raw 0, penalty 1)
+RESULT: FAIL
+```
+
+**改悪7(`postBid` の `FOR UPDATE` 除去)**
+
+```diff
+-		"SELECT "+auctionColumns+" FROM auctions WHERE id = ? FOR UPDATE", auctionID)
++		"SELECT "+auctionColumns+" FROM auctions WHERE id = ?", auctionID)
+```
+
+**1回目の走行で検出した(3回まで許容のところ1回で発火)。** 4-A では2回目でようやく
+1件検出できたのに対し、今回は critical 63件と大差で発火している。Task 8 で
+watcher の `q` 分岐を `page=1` 固定にし、bidder のトラフィックが少数の live に
+集中するようになった効果と考えられる。
+
+```
+ERR: load: critical: auction 1088: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=30012(amount=4122) の直後に id=30011(amount=4252) が来ており単調減少でない)
+ERR: load: critical: auction 1129: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=30648(amount=4534) の直後に id=30647(amount=4553) が来ており単調減少でない)
+ERR: load: critical: auction 1129: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=30648(amount=4534) の直後に id=30647(amount=4553) が来ており単調減少でない)
+ERR: load: critical: auction 1319: フィードの金額が単調増加でない (id=31124(amount=1339) の次に id=31125(amount=1262))
+ERR: validation: critical: auction 1088: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=30012(amount=4122) の直後に id=30011(amount=4252) が来ており単調減少でない)
+ERR: validation: critical: auction 1106: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=30124(amount=1472) の直後に id=30123(amount=1538) が来ており単調減少でない)
+ERR: validation: critical: auction 1117: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=30182(amount=5125) の直後に id=30181(amount=5177) が来ており単調減少でない)
+ERR: validation: critical: auction 1129: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=30648(amount=4534) の直後に id=30647(amount=4553) が来ており単調減少でない)
+ERR: validation: critical: auction 1146: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=30515(amount=3933) の直後に id=30514(amount=4033) が来ており単調減少でない)
+ERR: validation: critical: auction 1224: winner_id が 1 (期待: 5 = 最高額 4083 の入札者)
+ERR: validation: critical: auction 1319: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=31125(amount=1262) の直後に id=31124(amount=1339) が来ており単調減少でない)
+ERR: validation: critical: auction 1018: bids の金額が単調増加違反 (受理順で単調増加のはずが、created_at DESC順で id=30539(amount=15120) の直後に id=30538(amount=15241) が来ており単調減少でない)
+ERR: validation: critical: user 6: outbid通知が 149件 (期待: 151件以上、欠落の疑い)
+ERR: validation: critical: user 17: outbid通知が 164件 (期待: 165件以上、欠落の疑い)
+ERR: validation: critical: user 10: outbid通知が 195件 (期待: 196件以上、欠落の疑い)
+ERR: validation: critical: user 11: outbid通知が 166件 (期待: 169件以上、欠落の疑い)
+ERR: validation: critical: user 13: outbid通知が 189件 (期待: 191件以上、欠落の疑い)
+ERR: validation: critical: user 20: outbid通知が 185件 (期待: 186件以上、欠落の疑い)
+ERR: validation: critical: user 19: outbid通知が 117件 (期待: 118件以上、欠落の疑い)
+SCORE: 19223  (raw 19286, penalty 63)
+  GET /auctions            : 2075回 (2075点)
+  GET /auctions (検索)       : 1658回 (3316点)
+  GET /auctions/:id        : 3709回 (3709点)
+  POST /auctions/:id/bids  : 1126回 (5630点)
+  GET /auctions/:id/bids   : 1117回 (1117点)
+  GET /notifications       : 502回 (1004点)
+  POST /auctions           : 487回 (2435点)
+ERRORS: 63件 (critical: 63件)
+RESULT: FAIL
+```
+
+(採取は `| tail -30` で行ったため、上に転記した ERR 行は**63件のうち末尾19件**である。
+先頭側の44件は取りこぼしており復元できない。合計は出力どおり `ERRORS: 63件`。
+内訳の検算: 2075 + 3316 + 3709 + 5630 + 1117 + 1004 + 2435 = 19286 = raw。一致。)
+
+**復元確認**
+
+`git checkout webapp/go/bids.go` → `git diff` は空、`git status --short` も空。
+再ビルド後の通常走行:
+
+```
+SCORE: 19429  (raw 19429, penalty 0)
+  GET /auctions            : 2096回 (2096点)
+  GET /auctions (検索)       : 1610回 (3220点)
+  GET /auctions/:id        : 3681回 (3681点)
+  POST /auctions/:id/bids  : 1167回 (5835点)
+  GET /auctions/:id/bids   : 1167回 (1167点)
+  GET /notifications       : 505回 (1010点)
+  POST /auctions           : 484回 (2420点)
+ERRORS: 0件 (critical: 0件)
+RESULT: PASS
+```
+
+→ 通常走行が `RESULT: PASS` に回帰したことを確認した。
+
+**4-A の記述の訂正**: 4-A の medium ゲート4 の節にある「除去後のバイナリに対し
+`grep -a -c 'FOR UPDATE' /usr/local/bin/isubid` は 1 を返した。これは `closer.go` 由来の
+別の(無関係な)`FOR UPDATE` であり、`bids.go` からの除去自体はビルドに正しく
+反映されている」という確認は、**検証として成立していない**。`bids.go:52` と
+`closer.go:51` は
+`"SELECT "+auctionColumns+" FROM auctions WHERE id = ? FOR UPDATE"` という
+**完全に同一の文字列リテラル**を組み立てており、Go のリンカは同一の文字列定数を
+1つに畳む。今回、`FOR UPDATE` を**残したまま**のバイナリに対して同じ grep を実行しても
+やはり `1` だった(`grep -a -o 'FOR UPDATE' | wc -l` も `1`)。つまりこの grep は
+改悪の有無にかかわらず常に 1 を返し、何も判別していない。改悪7の投入が実際に効いて
+いることの根拠は、投入前の `git diff` と、走行結果(critical 0件 → 63件)である。
+
+### ゲート5(非回帰)
+
+**4-A の SCORE 6177 との絶対値比較は行わない。** 4-B はページネーションで1リクエスト
+あたりのコストが約1/8になり、同じ DB 負荷がはるかに多い HTTP リクエストへ分散する
+別ワークロードである。見るのは次の3つの構造的指標(ゲート3の実測を使う)。
+
+| 指標 | 4-A | 4-B(ゲート3実測) | 判定 |
+|---|---|---|---|
+| 1. `GET /notifications` の回数 | 513 | **504**(0.98x) | ほぼ 1.0x → OK |
+| 1. `POST /auctions` の回数 | 497 | **485**(0.98x) | ほぼ 1.0x → OK |
+| 2. 採点対象7本が0回でない | — | 2078 / 1566 / 3627 / 1136 / 1136 / 504 / 485 | すべて非0 → OK |
+| 3. `GET /auctions` の回数 | 496 | **2078**(検索1566 を足すと一覧系 3644) | 増加 → OK |
+
+通知ワーカーと出品ワーカーは自エンドポイントのレイテンシで律速されており、一覧の
+変更に影響されないという想定どおり、どちらも 4-A から 2% 以内の差に収まっている。
+意図しない副作用は観測されなかった。**ゲート5 PASS。**
+
+**4-B 以降のスコア基準は 18000〜19000 台で引き直す。** 今回このマシンで観測した
+通常走行の実測は 19086 / 19429 の2本(Task 8 のレビュー実測 18672 / 19134 / 18439 を
+含めると 18439〜19429)。4-E で採用スケールを再決定する際は、この帯を出発点にすること。
+
+### `medium` / `full` の探り
+
+`initial-data` を `-scale medium` / `-scale full` で生成し、`ISUBID_INITIAL_DATA_DIR`
+(compose の `../initial-data/out:/initial-data:ro` マウント)を生成先へ差し替えて
+各1回だけ60秒走行させた。生成物はコミットしていない。**採用スケールは `small` のまま
+変更しない。**
+
+生成コマンドの出力:
+
+```
+scale=medium seed=20260830 users=2000 auctions=4150 bids=120000 notifications=16000 -> .../isubid-medium
+scale=full   seed=20260830 users=5000 auctions=10300 bids=300000 notifications=40000 -> .../isubid-full
+```
+
+**記録すべき1点 —— ページネーション導入後、`GET /auctions` は `medium` / `full` で
+完走するか(4-A では `full` で 0回だった)**
+
+| scale | `GET /auctions` | `GET /auctions (検索)` | 4-A の `GET /auctions` |
+|---|---|---|---|
+| medium | **880回** | 418回 | 112回 |
+| full | **377回** | 154回 | **0回(60件タイムアウト)** |
+
+**答え: 完走する。`full` でも `GET /auctions` は 377回成功し、採点対象7本すべてが
+非0になった。** 4-A 持ち越し3(`full` での一覧全滅)はページネーションによって
+解消している。
+
+medium(60秒走行):
+
+```
+SCORE: 9174  (raw 9174, penalty 0)
+  GET /auctions            : 880回 (880点)
+  GET /auctions (検索)       : 418回 (836点)
+  GET /auctions/:id        : 1307回 (1307点)
+  POST /auctions/:id/bids  : 605回 (3025点)
+  GET /auctions/:id/bids   : 605回 (605点)
+  GET /notifications       : 398回 (796点)
+  POST /auctions           : 345回 (1725点)
+ERRORS: 0件 (critical: 0件)
+RESULT: PASS
+```
+
+full(60秒走行):
+
+```
+SCORE: 4316  (raw 4316, penalty 0)
+  GET /auctions            : 377回 (377点)
+  GET /auctions (検索)       : 154回 (308点)
+  GET /auctions/:id        : 539回 (539点)
+  POST /auctions/:id/bids  : 270回 (1350点)
+  GET /auctions/:id/bids   : 270回 (270点)
+  GET /notifications       : 276回 (552点)
+  POST /auctions           : 184回 (920点)
+ERRORS: 0件 (critical: 0件)
+RESULT: PASS
+```
+
+参考として Prepare も1回ずつ測った(ゲート判定には使わない):
+
+```
+medium: PREPARE: PASS   ... 5.201 total
+full:   PREPARE: PASS   ... 14.319 total
+```
+
+`medium` は 4-A の 4.31〜4.41s から 5.2s へ、`full` は 11.47〜12.31s から 14.3s へ
+悪化している。全ページ走査(`full` の live は 300件超 = 16ページ)と検索プローブ5本
+ぶんの増加が効いており、`full` の Prepare は 4-A よりさらに 6秒基準から遠ざかった。
+`medium` は依然 6秒基準内。**この探りではゲート4(`FOR UPDATE` 検出)は測っていない**
+ので、4-A 持ち越し1(スケールを上げると単調増加検出器の感度が落ちる)が解消したか
+どうかは**今回のデータからは判断できない**。
+
+### まとめと持ち越し(4-Eへ)
+
+**ゲート1〜5 はすべて PASS。改悪7種すべてが検出された。**
+
+4-A からの持ち越しのうち、**持ち越し7(Prepare の第2の締切)は 4-B の Task 7 で
+対応済み**(上記 4-A 節の該当箇所に追記済み)。持ち越し3(`full` での一覧全滅)は
+上記の探りのとおり実質的に解消しているが、`full` のゲート4は未測定のため
+「採用スケールの再検討材料が増えた」という位置づけに留める。
+
+- **持ち越し13: オフセットページネーションの読み飛ばし**。Prepare の全ページ走査中に
+  先頭側の live が closed になると、後続ページの行が手前へずれ、まだ読んでいない行が
+  読み飛ばされる。Task 6 で入れた期限切れ許容は「期限が到来して**消えた**行」しか
+  救わないため、ずれて隠れた行は「期限前なのに欠けている」として **false-FAIL に
+  なりうる**。採用スケール `small` では最短の期限が +12秒(シード auction 4)で
+  Prepare 実測が 1.7〜1.8秒なので窓に十分な余裕があるが、`full`(Prepare 14.3秒)では
+  危険。候補の対策: **最終ページから逆順に辿る**(行が先頭から消えると逆順走査では
+  重複が出るだけで、欠落にはならない = 安全な向きに倒れる)。他に、走査を
+  1トランザクション相当のスナップショットで固定する API を足す案もあるが、
+  参照実装に検証専用の口を増やすことになるので優先度は低い。
+- **持ち越し14: `total_count` をトランザクション外に出す改変は検出できない**。
+  `getAuctions` が COUNT と SELECT を単一トランザクションで読んでいることは、
+  ベンチでは検出できない。両者を別々に読んだ場合の不整合は、その間に入札や close が
+  commit されるという理論上のレースとしてしか現れず、静穏期の Prepare では起きず、
+  Load では「返さなすぎ」を検査しない(一方向検査)ため素通りする。**一貫性の担保は
+  コード構造(単一トランザクション)とコメントに委ねており、ベンチによる検出は
+  最初から期待していない。** 4-E で「参加者がトランザクションを外す改善」を明示的に
+  不合格にしたいなら、別の仕掛け(たとえば `total_count` と全ページ合計の突き合わせを
+  高頻度で回す専用フェーズ)が必要になる。
+- **持ち越し15: 深い OFFSET が Load で一度も踏まれない**。watcher は page 1〜3 しか
+  引かず、`q` 分岐は Task 8 の修正で page=1 固定になった。一方、走行終盤には live が
+  増えて8ページ程度まで伸びる。つまり **`LIMIT ? OFFSET ?` の「OFFSET が深いほど遅い」
+  という意図的な遅さが、Load ではほとんど負荷になっていない。** 参加者から見ると
+  深いページの最適化にインセンティブが無い。4-E で watcher のページ選択を
+  「実際の `total_count` から算出した範囲」に広げるか検討する。
+- **持ち越し16: スコアが約3倍になったことで `errorPenalty = 1` が相対的に弱くなった**。
+  4-A では critical 100件で 1.6% の減点だったが、4-B のスコア帯(約19000)では
+  0.5% にしかならない。4-A 持ち越し2(エラー上限が絶対件数)と同じ軸の問題で、
+  **減点もしきい値も、スコアのスケールに追随しない絶対値になっている。**
+  4-E で errorLimit の割合化を検討する際に、`errorPenalty` も併せて見直すこと。
+- **持ち越し17: `auctionsPerPage = 20` がモジュールを跨いで二重定義されている**。
+  `webapp/go/auctions.go` と `bench/validate.go` の両方にあり、別 go.mod なので
+  コンパイル時に照合する手段が無い(4-A 持ち越し8 と同じ drift リスク)。
+  現状は双方にコメントで相互参照を書いてある。片方だけ変えると Prepare が
+  「has_next が true なのに N件」として落ちるので、エラー文が原因を名指しする
+  ぶん診断は速い。恒久対策を採るなら、`GET /auctions` のレスポンスに
+  `per_page` を含めてベンチがそれを読む形が素直。
+- **軽微な持ち越し(4-E で手が入る際についでに直すもの)**:
+  - `ValidatePagedListShape` のエラー文が `GET /auctions?page=%d` しか名乗らないため、
+    `q` / `category` 付きのプローブで落ちたときにどのリクエストか判別できない
+    (改悪3 の測定で実際に困り、DB を直接引いて特定した)。ラベルを引数で受け取る
+    形にすれば解決する。あわせて、**AND結合プローブ(`q=ワークス&category=2`)の
+    期待集合照合そのものの検出力は、まだ実機で独立に確認できていない** ——
+    改悪3 はその手前の `category=1` プローブで落ちたため。
+  - `GetAuctionsRaw` に空文字列を渡すと `"/auctions?"` という末尾 `?` だけの URL に
+    なる(現時点で空文字列を渡す呼び出しは無い)。
+  - `ValidateSnapshotAuctionDetail` は `now` を引数で受け取らず内部で `time.Now()` を
+    呼ぶが、`ValidateSearchResult` は引数で受け取る。機能上の問題は無いが流儀が不統一。
+  - 「closed のはずが live」「upcoming が絡む status 不一致」を固定する committed
+    テストが無い(動作はレビュー時に手で確認済み)。
+  - `createLiveAuctions` の戻り値 `[]int64` を誰も使っていない。
+  - `TestGetAuctionsResponseShape` と `TestGetAuctions` のアサーションが重複している。
+  - `?page=`(空文字)を「未指定」と同一視する契約がテストで固定されていない。
+  - `TestSnapshotCarriesDescription` だけ `cfg.Seed = DefaultSeed` を明示していない
+    (同ファイルの他3テストは明示)。
+  - スコア表示の `%-25s` が CJK 文字幅を考慮しておらず、`GET /auctions (検索)` の行だけ
+    列がずれる(表示のみの問題)。
+- **プロセス上の教訓(4-B で実際に事故になりかけたもの)**:
+  - **スペックに書く実データの数字は、コピー元を変えたら必ず再計算すること。**
+    「`ワークス` のカテゴリ内訳 {1:3, 2:1, 3:1}」は `エルゴフロー` の数字をそのまま
+    流用した誤りで、実値は {1:1, 2:2, 3:2} だった。実装者が実機クエリで発見した。
+  - **プローブ語は「語の先頭に来ない部分文字列」を選ぶこと。** 先頭に来る語を選ぶと
+    前方一致改悪(`LIKE '%q%'` → `LIKE 'q%'`)が原理的に検出できない。
+  - **改悪リストは、実施したものと指定されたものを1つずつ突き合わせること。**
+    Task 6 の実装者が実機投入した6種は、指定リストと4種しか重複しておらず、
+    前方一致の穴が一度見逃されている。
+  - **バイナリへの grep で「改悪が反映されたか」を確かめるときは、同一の文字列
+    リテラルが他所にも無いかを確認すること**(上記 4-A の訂正を参照)。
