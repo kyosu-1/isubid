@@ -517,3 +517,37 @@ RESULT: PASS
   `medium`/`full` の生成物(`medium` 約10MB、`full` 約25MB)はいずれもリポジトリに
   コミットしていない(採用スケールではないため)。将来 `full` を採用する場合は
   50MB前後に収まる見込みだが、その時点で再度サイズを確認すること。
+- **持ち越し7: Prepareに、gate2の12秒窓とは別の未文書化された締切がもう1つある**。
+  `BuildSnapshot` は詳細検証用に先頭10件のliveオークションをidで抽出するが、
+  live のオフセットはシャッフルされているためこれらは任意のオフセットに着地し
+  (コミット済みsnapshotで最小21秒、ジェネレータ設計上は最小15秒)、しかもサンプル
+  されたliveオークションは*最後に*fetchされる。Prepareの末尾がそのオフセットを
+  跨ぐと `ValidateSnapshotAuctionDetail` がstatus不一致を報告し、正しいアプリを
+  hard-failさせる。notesのgate2根拠はseed auction 4の+12秒窓しか名指ししておらず、
+  この経路は別物。候補案: (a) 期限が実際に到来している場合は
+  `ValidateSnapshotAuctionDetail` が `closed` を受理できるようにする
+  (`ValidateAuctionClosedIfDue` が既に行っている許容と同じ発想)、
+  (b) サンプル対象をオフセットが長いliveオークションだけに限定する。
+- **持ち越し8: モジュール間の定数drift が、誤解を招く症状としてしか検出されない**。
+  `generatedEpochLiteral`(`webapp/go`)と `generatedEpoch`(`initial-data`)は別モジュールに
+  存在し、両者を機械的に突き合わせる仕組みが無い。片方だけがズレると、Prepareは
+  一覧のライブ件数不一致として報告し、原因が一覧エンドポイントにあるかのように
+  見えてしまう。同様に `Snapshot.Seed` と `Snapshot.Scale` は `bench/snapshot.go` で
+  パースされた後どこからも読まれておらず、古いdumpに新しいsnapshotを当てても
+  それ自体では検出されず、下流の症状としてしか気付けない。安価な緩和策:
+  起動時にsnapshotのscale/seedをログ出力する、Prepareでアサートできる範囲を
+  アサートする。
+- **持ち越し9: 生成オークションが closed オークションの証人から除外されている**。
+  Validationは触れた生成オークションに対して `reconcileAuction` しか呼んでおらず、
+  `reconcileClosedAuction`・`ValidateAuctionClosedIfDue`、そして won通知検査を
+  支える winnersマップをスキップしている。false-FAIL回避の観点では正しい判断だが、
+  結果として「winner = argmax(bids)」という証人(単調増加検査に次いで強力な
+  `FOR UPDATE` 検出器)がseedの10オークションとベンチの一覧取得分しかカバーせず、
+  bidderトラフィックの大半が向かう生成オークションはこの検証から漏れている。
+  これはmediumスケールで記録済みのgate4検出漏れ(持ち越し1)と同じ希釈メカニズムで
+  あり、スケール固有の問題ではなくこちらが本質として名指しされるべきもの。
+- **持ち越し10: 生成した25件の `upcoming` オークションは何にも検証されていない**。
+  snapshotにもValidationの既知集合にも含まれるが、liveの一覧には出てこず、詳細
+  サンプルの対象にもならない。`starts_at`・`ends_at`・title・sellerのいずれかが
+  間違っていても検出できない。サンプル対象へupcoming idを2〜3件足すだけで、
+  低コストにこの穴を塞げる。
