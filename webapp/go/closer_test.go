@@ -82,6 +82,46 @@ func TestCloseDueAuctions(t *testing.T) {
 	}
 }
 
+// closeAuction は ends_at が未来のオークションには手を出してはならない。
+//
+// Critical回帰テスト: closeDueAuctions は status='live' AND ends_at<=NOW(6) で
+// 対象idを集めてから1件ずつ closeAuction を呼ぶが、両者の間には(意図的に遅い)
+// 全件スキャンとbids非インデックス検索を挟むため、実運用では数百msの間隔が空く。
+// POST /initialize は明示idでテーブルを丸ごと入れ替えるため、その間隔の間に
+// 別のゴルーチン(あるいは次のベンチ実行)が /initialize を叩くと、収集済みの
+// idが「たまたま同じidを持つ、期限がまだ先の新しいオークション」を指してしまう
+// ことがある。closeAuction が ends_at を再チェックしないと、そのオークションを
+// 誤って closed にしてしまう。ここでは間隔を空けず直接 closeAuction を呼ぶことで
+// 同じ入力(ends_at が未来のauction id)を再現する。
+func TestCloseAuctionDoesNotCloseFutureAuction(t *testing.T) {
+	ts := newTestServer(t)
+	initApp(t, ts)
+	h := newTestHandler(t)
+	ctx := context.Background()
+
+	// auction 1 は auctionEndOffsets(initialize.go)で +3600秒。initialize直後は
+	// status='live' のまま ends_at が1時間先にあり、closeDueAuctions が拾う対象では
+	// ないはずの行である。
+	if err := h.closeAuction(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	var a struct {
+		Status   string `db:"status"`
+		WinnerID *int64 `db:"winner_id"`
+	}
+	if err := h.db.GetContext(ctx, &a,
+		"SELECT status, winner_id FROM auctions WHERE id = 1"); err != nil {
+		t.Fatal(err)
+	}
+	if a.Status != "live" {
+		t.Errorf("auction 1 status = %q, want live (ends_at はまだ未来のはず)", a.Status)
+	}
+	if a.WinnerID != nil {
+		t.Errorf("auction 1 winner_id = %v, want nil (未終了のはず)", a.WinnerID)
+	}
+}
+
 // closeAuction は既に closed のオークションに対して何もしない(冪等)。
 func TestCloseAuctionIdempotent(t *testing.T) {
 	ts := newTestServer(t)
