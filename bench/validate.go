@@ -643,31 +643,38 @@ func ValidateNotificationsOrdered(ns []Notification) error {
 
 // ValidateUserIcon はアイコンの応答を照合する。
 //
+// ステータス起因のエラー(statusErr)と内容不一致のエラー(contentErr)を分けて返す。
+// 呼び出し側は前者を ErrApplication、後者を ErrCritical として扱うこと。
+// ステータスの想定外(一時的な5xxやコネクションプール枯渇由来の応答等)は
+// サーバーの一過性の不調でありうるため即FAILにしてはならないが、内容不一致
+// (別人のアイコン・壊れた画像・誤った Content-Type)は「画像として正しく
+// 配れていない」という実装そのものの誤りであり、不正防止のため即FAILのままにする。
+//
 // su が nil なら「スナップショットに無いユーザー」= シードユーザーか、ベンチが
 // 走行中に作った新規ユーザー。どちらもアイコンを持たないので 404 が正しい。
 //
 // sha256 を照合するのは「全ユーザーに同じ画像を返す」改悪を捕まえるためである。
 // アイコンの内容は走行中に変化しないので、ここに false-FAIL の余地は無い。
-func ValidateUserIcon(id int64, code int, contentType string, body []byte, su *SnapshotUser) error {
+func ValidateUserIcon(id int64, code int, contentType string, body []byte, su *SnapshotUser) (statusErr, contentErr error) {
 	wantIcon := su != nil && su.IconSHA256 != ""
 
 	if !wantIcon {
 		if code != http.StatusNotFound {
-			return fmt.Errorf("GET /users/%d/icon: status %d (期待: 404、アイコン未設定のユーザー)", id, code)
+			return fmt.Errorf("GET /users/%d/icon: status %d (期待: 404、アイコン未設定のユーザー)", id, code), nil
 		}
-		return nil
+		return nil, nil
 	}
 
 	if code != http.StatusOK {
-		return fmt.Errorf("GET /users/%d/icon: status %d (期待: 200)", id, code)
+		return fmt.Errorf("GET /users/%d/icon: status %d (期待: 200)", id, code), nil
 	}
 	if contentType != "image/png" {
-		return fmt.Errorf("GET /users/%d/icon: Content-Type が %q (期待: image/png)", id, contentType)
+		return nil, fmt.Errorf("GET /users/%d/icon: Content-Type が %q (期待: image/png)", id, contentType)
 	}
 	got := fmt.Sprintf("%x", sha256.Sum256(body))
 	if got != su.IconSHA256 {
-		return fmt.Errorf("GET /users/%d/icon: 内容が不一致 (%d bytes, sha256 %s、期待: %s)",
+		return nil, fmt.Errorf("GET /users/%d/icon: 内容が不一致 (%d bytes, sha256 %s、期待: %s)",
 			id, len(body), got[:16], su.IconSHA256[:16])
 	}
-	return nil
+	return nil, nil
 }

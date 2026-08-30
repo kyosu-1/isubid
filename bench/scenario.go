@@ -507,8 +507,10 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 			if err != nil {
 				return err
 			}
-			if err := ValidateUserIcon(id, code, ct, body, su); err != nil {
-				return err
+			if statusErr, contentErr := ValidateUserIcon(id, code, ct, body, su); statusErr != nil {
+				return statusErr
+			} else if contentErr != nil {
+				return contentErr
 			}
 		}
 		// シードユーザー(アイコン未設定)と存在しないユーザーは 404
@@ -517,8 +519,10 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 			if err != nil {
 				return err
 			}
-			if err := ValidateUserIcon(id, code, ct, body, nil); err != nil {
-				return err
+			if statusErr, contentErr := ValidateUserIcon(id, code, ct, body, nil); statusErr != nil {
+				return statusErr
+			} else if contentErr != nil {
+				return contentErr
 			}
 		}
 		// 非数値の id は 400

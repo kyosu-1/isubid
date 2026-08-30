@@ -268,8 +268,18 @@ func (s *Scenario) watcherIteration(ctx context.Context, step *isucandar.Benchma
 			continue
 		}
 		su, _ := s.Snapshot.UserByID(a.Seller.ID)
-		if err := ValidateUserIcon(a.Seller.ID, code, ct, body, su); err != nil {
-			addErr(ctx, step, ErrCritical, err)
+		// ステータス起因(一過性の5xx等でありうる)と内容不一致(実装の誤り)を
+		// 区別する。前者を即FAILにすると、コネクションプール枯渇のような
+		// ありがちな失敗が(1周あたり最大20回呼ばれる)アイコン経路経由で
+		// 走行全体を即死させてしまい、他の採点タグ(500でもエラー予算100件の
+		// 減点で済む)に比べて著しく不公平になる。
+		statusErr, contentErr := ValidateUserIcon(a.Seller.ID, code, ct, body, su)
+		if statusErr != nil {
+			addErr(ctx, step, ErrApplication, statusErr)
+			return
+		}
+		if contentErr != nil {
+			addErr(ctx, step, ErrCritical, contentErr)
 			return
 		}
 	}

@@ -1261,38 +1261,59 @@ func TestValidateUserIcon(t *testing.T) {
 	without := &SnapshotUser{ID: 101, Name: "gen_user_00101"}
 
 	// 正常系: アイコンあり
-	if err := ValidateUserIcon(100, 200, "image/png", png, withIcon); err != nil {
-		t.Errorf("正常なアイコンが拒否された: %v", err)
+	if statusErr, contentErr := ValidateUserIcon(100, 200, "image/png", png, withIcon); statusErr != nil || contentErr != nil {
+		t.Errorf("正常なアイコンが拒否された: statusErr=%v contentErr=%v", statusErr, contentErr)
 	}
 	// 正常系: アイコン未設定は 404
-	if err := ValidateUserIcon(101, 404, "", nil, without); err != nil {
-		t.Errorf("アイコン未設定の404が拒否された: %v", err)
+	if statusErr, contentErr := ValidateUserIcon(101, 404, "", nil, without); statusErr != nil || contentErr != nil {
+		t.Errorf("アイコン未設定の404が拒否された: statusErr=%v contentErr=%v", statusErr, contentErr)
 	}
 	// 正常系: スナップショットに無いユーザー(ベンチが走行中に作った新規ユーザー等)は 404
-	if err := ValidateUserIcon(99999, 404, "", nil, nil); err != nil {
-		t.Errorf("未知ユーザーの404が拒否された: %v", err)
+	if statusErr, contentErr := ValidateUserIcon(99999, 404, "", nil, nil); statusErr != nil || contentErr != nil {
+		t.Errorf("未知ユーザーの404が拒否された: statusErr=%v contentErr=%v", statusErr, contentErr)
 	}
 
-	// 異常系
+	// 異常系。wantStatusErr は「ステータス起因(呼び出し側で ErrApplication に
+	// マップすべき)」か「内容不一致(呼び出し側で ErrCritical に
+	// マップすべき)」かを示す。一過性の5xx等でありうるステータス起因のエラーを
+	// 即FAILにすると、コネクションプール枯渇のようなありがちな失敗経由で
+	// 走行全体が即死する不公平が起きるため、この分類を固定する。
 	for _, tt := range []struct {
-		name        string
-		id          int64
-		code        int
-		contentType string
-		body        []byte
-		su          *SnapshotUser
+		name          string
+		id            int64
+		code          int
+		contentType   string
+		body          []byte
+		su            *SnapshotUser
+		wantStatusErr bool
 	}{
-		{"アイコンありなのに404", 100, 404, "", nil, withIcon},
-		{"別人のアイコンが返る", 100, 200, "image/png", []byte("other"), withIcon},
-		{"バイト列が途中で切れている", 100, 200, "image/png", png[:3], withIcon},
-		{"Content-Type が image/png でない", 100, 200, "application/octet-stream", png, withIcon},
-		{"アイコン未設定なのに200", 101, 200, "image/png", png, without},
-		{"未知ユーザーなのに200", 99999, 200, "image/png", png, nil},
-		{"予期しないステータス", 100, 500, "", nil, withIcon},
+		{"アイコンありなのに404", 100, 404, "", nil, withIcon, true},
+		{"別人のアイコンが返る", 100, 200, "image/png", []byte("other"), withIcon, false},
+		{"バイト列が途中で切れている", 100, 200, "image/png", png[:3], withIcon, false},
+		{"Content-Type が image/png でない", 100, 200, "application/octet-stream", png, withIcon, false},
+		{"アイコン未設定なのに200", 101, 200, "image/png", png, without, true},
+		{"未知ユーザーなのに200", 99999, 200, "image/png", png, nil, true},
+		{"予期しないステータス", 100, 500, "", nil, withIcon, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := ValidateUserIcon(tt.id, tt.code, tt.contentType, tt.body, tt.su); err == nil {
-				t.Error("検出されない")
+			statusErr, contentErr := ValidateUserIcon(tt.id, tt.code, tt.contentType, tt.body, tt.su)
+			if statusErr == nil && contentErr == nil {
+				t.Fatal("検出されない")
+			}
+			if tt.wantStatusErr {
+				if statusErr == nil {
+					t.Errorf("ステータス起因のはずが statusErr == nil (contentErr=%v)", contentErr)
+				}
+				if contentErr != nil {
+					t.Errorf("ステータス起因のはずが contentErr にもエラーが入っている: %v", contentErr)
+				}
+			} else {
+				if contentErr == nil {
+					t.Errorf("内容不一致のはずが contentErr == nil (statusErr=%v)", statusErr)
+				}
+				if statusErr != nil {
+					t.Errorf("内容不一致のはずが statusErr にもエラーが入っている: %v", statusErr)
+				}
 			}
 		})
 	}
