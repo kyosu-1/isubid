@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -489,7 +491,10 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 		}
 
 		// 不正値は 400
-		for _, raw := range []string{"page=0", "page=-1", "page=abc", "category=abc"} {
+		// q=255 rune 超(256 rune)は設計 §3-4 が列挙する5件目の不正値。
+		// GetAuctionsRaw は "/auctions?" + rawQuery をそのまま送るため URL エンコードが要る。
+		longQ := "q=" + url.QueryEscape(strings.Repeat("あ", 256))
+		for _, raw := range []string{"page=0", "page=-1", "page=abc", "category=abc", longQ} {
 			code, err := c.GetAuctionsRaw(ctx, raw)
 			if err != nil {
 				return err
