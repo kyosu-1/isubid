@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -503,5 +505,107 @@ func TestGetAuctionsInvalidPage(t *testing.T) {
 		if res.StatusCode != http.StatusBadRequest {
 			t.Errorf("GET /auctions%s status = %d, want 400", q, res.StatusCode)
 		}
+	}
+}
+
+// idsOf は一覧レスポンスから id を昇順で取り出す。
+func idsOf(l auctionListJSON) []int64 {
+	ids := make([]int64, 0, len(l.Auctions))
+	for _, a := range l.Auctions {
+		ids = append(ids, a.ID)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+func TestGetAuctionsSearch(t *testing.T) {
+	ts := newTestServer(t)
+	initApp(t, ts)
+
+	for _, tt := range []struct {
+		name  string
+		query string
+		want  []int64
+	}{
+		// title にだけ出る語。description 側の条件を落としても通ってしまうので、
+		// 下の「description にだけ出る語」とセットで初めて OR の両辺を固定できる。
+		{"title にだけ出る語", "?q=ヘリテージ", []int64{1}},
+		// description にだけ出る語(3 と 6 の description に「ゲーミング」がある)。
+		{"description にだけ出る語", "?q=ゲーミング", []int64{3, 6}},
+		// live 以外は除外される(11=closed の 初代ISUCONチェア、12=upcoming の ISUリラックス Pro)。
+		{"live 以外を含まない", "?q=ISU", []int64{3}},
+		{"どこにも無い語", "?q=ズンドコベロンチョ", []int64{}},
+		{"カテゴリ絞り込み", "?category=2", []int64{3, 6, 9}},
+		// AND であること。OR だと {1} ∪ {3,6,9} = 4件になる。
+		{"q と category は AND", "?q=ヘリテージ&category=2", []int64{}},
+		{"存在しないカテゴリは空結果", "?category=999", []int64{}},
+		// LIKE のワイルドカードがエスケープされていること。
+		// エスケープしていないと '%' が「全件」を意味し 10件返る。
+		{"% はリテラルとして扱う", "?q=%25", []int64{}},
+		{"_ はリテラルとして扱う", "?q=_", []int64{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			l := getAuctionList(t, ts.URL, tt.query)
+			got := idsOf(l)
+			if len(got) != len(tt.want) {
+				t.Fatalf("ids = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("ids = %v, want %v", got, tt.want)
+				}
+			}
+			if l.TotalCount != int64(len(tt.want)) {
+				t.Errorf("total_count = %d, want %d", l.TotalCount, len(tt.want))
+			}
+			if l.HasNext {
+				t.Errorf("has_next = true, want false")
+			}
+		})
+	}
+}
+
+func TestGetAuctionsSearchPaginates(t *testing.T) {
+	ts := newTestServer(t)
+	initApp(t, ts)
+	createLiveAuctions(t, ts, 25) // title は「ページング用 NN」
+
+	p1 := getAuctionList(t, ts.URL, "?q=ページング用&page=1")
+	if len(p1.Auctions) != 20 || p1.TotalCount != 25 || !p1.HasNext {
+		t.Fatalf("検索の page 1 が %d件 / total_count %d / has_next %v (期待: 20 / 25 / true)",
+			len(p1.Auctions), p1.TotalCount, p1.HasNext)
+	}
+	p2 := getAuctionList(t, ts.URL, "?q=ページング用&page=2")
+	if len(p2.Auctions) != 5 || p2.TotalCount != 25 || p2.HasNext {
+		t.Fatalf("検索の page 2 が %d件 / total_count %d / has_next %v (期待: 5 / 25 / false)",
+			len(p2.Auctions), p2.TotalCount, p2.HasNext)
+	}
+}
+
+func TestGetAuctionsInvalidSearchParams(t *testing.T) {
+	ts := newTestServer(t)
+	initApp(t, ts)
+
+	long := "?q=" + url.QueryEscape(strings.Repeat("あ", 256))
+	for _, q := range []string{"?category=abc", "?category=1.5", long} {
+		res, err := http.Get(ts.URL + "/auctions" + q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != http.StatusBadRequest {
+			t.Errorf("GET /auctions%s status = %d, want 400", q, res.StatusCode)
+		}
+	}
+
+	// ちょうど 255 rune は通る(境界)
+	ok := "?q=" + url.QueryEscape(strings.Repeat("あ", 255))
+	res, err := http.Get(ts.URL + "/auctions" + ok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("255 rune の q が status = %d, want 200", res.StatusCode)
 	}
 }
