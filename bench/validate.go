@@ -155,9 +155,18 @@ func ValidateInitialAuctionList(list []AuctionSummary, base time.Time) error {
 // 期待集合を計算できる)。Load は probeTitleOnly だけを使う ——
 // 一覧レスポンスの AuctionSummary に description が無いため、description で
 // 一致した行を Load 側は検証しようがなく、正しい実装を誤判定してしまう。
+//
+// プローブは必ず「語中」に出現する語を選ぶこと。initial-data の生成タイトルは
+// chairNames の要素 + " " + 連番、description は chairDescs の要素そのものなので、
+// chairNames/chairDescs の先頭語(例: "エルゴフロー" や "職人")を選ぶと
+// 常に文字列の先頭で一致してしまい、LIKE '%q%' を LIKE 'q%'(前方一致)に
+// 書き換える改悪が同じ集合を返して素通りする。
+// "ワークス" は "メッシュワークス NNNNN" の途中、"手作業" は
+// "職人による手作業の仕上げ" の途中にしか現れないため、前方一致に落とすと
+// どちらも0件になり確実に検出できる。
 const (
-	probeTitleOnly       = "エルゴフロー"
-	probeDescriptionOnly = "職人"
+	probeTitleOnly       = "ワークス"
+	probeDescriptionOnly = "手作業"
 	probeNoMatch         = "ズンドコベロンチョ"
 )
 
@@ -196,8 +205,9 @@ func expectedLiveMatches(probe string, categoryID int64, snap *Snapshot, base ti
 // 期待集合と照合する。Prepare 専用(Load 中は出品ワーカーが期待集合に無い
 // オークションを増やすため成立しない)。
 //
-// E = 走査開始時点の期待集合(want)、D = 走査中に ends_at が到来した E の部分集合、
-// R = 実際に返ってきた行の集合として、次の3つだけを検査する。
+// E = 走査開始時点の期待集合(want)、D = 走査中に ends_at が到来した(かもしれない)
+// E の部分集合、R = 実際に返ってきた行の集合として、次の3つだけを検査する。
+// D の判定には endsAtTolerance を効かせる(下の期限判定のコメント参照)。
 //
 //	R ⊆ E                          期待集合に無い id が返ってきたら常に異常
 //	E \ D ⊆ R                      期限がまだ来ていないものが欠けていたら異常
@@ -236,8 +246,12 @@ func ValidateSearchResult(label string, got []AuctionSummary, totalCount int64,
 
 	var stillLive int64
 	for id, endsAt := range want {
-		if !endsAt.After(now) {
-			continue // 期限到来済み。欠けていてよい
+		// 期限判定にも endsAtTolerance を効かせる。base はアプリが基準時刻を採った後に
+		// 採られるため、実際の ends_at は base+offset より最大 endsAtTolerance だけ手前に
+		// なりうる。ここをゼロ許容にすると、正しいアプリが初期化所要時間ぶんだけ早く
+		// closed にしたオークションに対して、まだ存在を要求してしまう。
+		if !endsAt.Add(-endsAtTolerance).After(now) {
+			continue // 期限到来済みかもしれない。欠けていてよい
 		}
 		stillLive++
 		if !gotIDs[id] {
@@ -315,10 +329,8 @@ func ValidateAuctionListWithSnapshot(all []AuctionSummary, totalCount int64, sna
 	}
 
 	// 各行の中身を、シードは既存の期待値表、生成分はスナップショットと照合する
+	// (status が live であることは上の ValidateSearchResult が既に検査している)
 	for _, a := range all {
-		if a.Status != "live" {
-			return fmt.Errorf("auction %d: status が %q (期待: live)", a.ID, a.Status)
-		}
 		if a.ID <= seedMaxAuctionID {
 			w, ok := expectedInitialAuctions[a.ID]
 			if !ok {

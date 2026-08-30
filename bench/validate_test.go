@@ -604,9 +604,11 @@ func TestValidateAuctionClosedIfDue(t *testing.T) {
 // validAuctionListFixture は生成データ搭載時の一覧検証テストで共通して使う土台を
 // 組み立てる。build() は呼び出すたびに独立した(ends_at 昇順の)正しい一覧を返す。
 //
-// TestValidateAuctionListWithSnapshot と
-// TestValidateAuctionListWithSnapshotRejectsTotalCountMismatch の両方から使う
-// (既存テストにこの用途の共通関数が無かったため、このタスクで切り出した)。
+// TestValidateAuctionListWithSnapshot とその派生
+// (...TotalCountRange / ...AllowsMidScanExpiry / ...RejectsInconsistentSnapshot /
+// ...RejectsCrossPageDuplicateID)から使う。snap.Counts.LiveAuctions は
+// Auctions 配列の live 件数(3)と一致させてあり、
+// ValidateAuctionListWithSnapshot のスナップショット整合性ガードが通る前提になっている。
 func validAuctionListFixture() (build func() []AuctionSummary, snap *Snapshot, base time.Time) {
 	base = time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	snap = &Snapshot{
@@ -733,9 +735,15 @@ func TestValidateAuctionListWithSnapshotTotalCountRange(t *testing.T) {
 
 // 走査中に先頭側の期限が到来したケースは正しいアプリで起きるので拒否してはならない。
 // フィクスチャの最短2件(gen14 = +10秒、seed4 = +12秒)が期限を過ぎた状況を作る。
+//
+// now は base+14秒。期限判定には endsAtTolerance(5秒)が効くので、
+// 「期限到来済みかもしれない」と見なされるのは ends_at - 5秒 ≤ now、すなわち
+// オフセット19秒以下のもの ——  gen14(10)と seed4(12)だけが該当し、
+// 次に早い seed2(20)は「まだ期限前」の側に残る。この境界のおかげで
+// (c) の検査が意味を持つ。
 func TestValidateAuctionListWithSnapshotAllowsMidScanExpiry(t *testing.T) {
 	build, snap, base := validAuctionListFixture()
-	now := base.Add(15 * time.Second) // gen14(+10秒)と seed4(+12秒)は期限到来済み
+	now := base.Add(14 * time.Second) // gen14(+10秒)と seed4(+12秒)は期限到来済み
 	list := build()
 
 	// (a) 期限到来済みの2件が既に一覧から消えている(終了処理が間に合った)。
@@ -976,6 +984,24 @@ func TestSearchProbesAreClassified(t *testing.T) {
 			t.Errorf("プローブ %q が LIKE のワイルドカード文字を含む", p)
 		}
 	}
+
+	// プローブは必ず「語中」に出現しなければならない。どれか1つでも title や
+	// description の先頭に来ると、LIKE '%q%' を LIKE 'q%'(前方一致)へ落とす改悪が
+	// 同じ集合・同じ total_count を返してしまい、検証を素通りする。
+	// (生成タイトルは chairNames の要素 + " " + 連番、description は chairDescs の
+	// 要素そのものなので、chairNames/chairDescs の先頭語を選ぶとこれに該当する)
+	for _, p := range []string{probeTitleOnly, probeDescriptionOnly, probeNoMatch} {
+		for _, s := range titles {
+			if strings.HasPrefix(s, p) {
+				t.Errorf("プローブ %q が title %q の先頭に現れる (前方一致への改悪を検出できなくなる)", p, s)
+			}
+		}
+		for _, s := range descs {
+			if strings.HasPrefix(s, p) {
+				t.Errorf("プローブ %q が description %q の先頭に現れる (前方一致への改悪を検出できなくなる)", p, s)
+			}
+		}
+	}
 }
 
 // ValidateSearchResult は非対称なルールで照合する。期待集合の要素は ends_at が
@@ -1056,6 +1082,26 @@ func TestValidateSearchResultAllowsMidScanExpiry(t *testing.T) {
 	}
 }
 
+// base は initialize の応答受信後に採られるため、アプリが実際に持っている ends_at は
+// base+offset より最大 endsAtTolerance だけ手前になりうる。期限判定をゼロ許容にすると、
+// 正しいアプリが初期化所要時間ぶんだけ早く closed にしたオークションに対して
+// 「まだ存在するはず」と要求してしまい false-FAIL になる。
+func TestValidateSearchResultToleratesEndsAtSkew(t *testing.T) {
+	now := time.Now().UTC()
+
+	// 期待 ends_at は now のわずかに先(許容幅の内側)。アプリ側では既に期限が
+	// 到来して closed になっていておかしくないので、欠けていても通す。
+	inTolerance := map[int64]time.Time{1: now.Add(endsAtTolerance - time.Second)}
+	if err := ValidateSearchResult("t", nil, 0, inTolerance, now); err != nil {
+		t.Errorf("許容幅内の期限ズレによる欠落が拒否された: %v", err)
+	}
+	// 許容幅より十分先の期限なら、欠落は依然として異常
+	beyondTolerance := map[int64]time.Time{1: now.Add(endsAtTolerance + time.Minute)}
+	if err := ValidateSearchResult("t", nil, 0, beyondTolerance, now); err == nil {
+		t.Error("許容幅を超えて先の期限のオークションの欠落が検出されない")
+	}
+}
+
 // 「total_count を len(auctions) で返す」改悪は、page 1 で has_next=false になって
 // 走査が1ページ(最大20件)で止まるため、期限未到来の期待件数を満たせず捕まる。
 func TestValidateSearchResultDetectsTotalCountAsPageLen(t *testing.T) {
@@ -1081,11 +1127,11 @@ func TestValidateSearchResultDetectsTotalCountAsPageLen(t *testing.T) {
 func TestExpectedLiveMatches(t *testing.T) {
 	base := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	snap := &Snapshot{Auctions: []SnapshotAuction{
-		{ID: 100, Title: "エルゴフロー X", Description: "普通の椅子", CategoryID: 1, Status: "live", EndsAtOffset: 30},
+		{ID: 100, Title: "メッシュワークス 00100", Description: "普通の椅子", CategoryID: 1, Status: "live", EndsAtOffset: 30},
 		{ID: 101, Title: "普通の椅子", Description: "職人による手作業の仕上げ", CategoryID: 2, Status: "live", EndsAtOffset: 40},
-		{ID: 102, Title: "エルゴフロー Y", Description: "普通の椅子", CategoryID: 2, Status: "live", EndsAtOffset: 50},
-		{ID: 103, Title: "エルゴフロー Z", Description: "普通の椅子", CategoryID: 1, Status: "closed", EndsAtOffset: 0},
-		{ID: 104, Title: "エルゴフロー W", Description: "普通の椅子", CategoryID: 1, Status: "upcoming", EndsAtOffset: 600},
+		{ID: 102, Title: "メッシュワークス 00102", Description: "普通の椅子", CategoryID: 2, Status: "live", EndsAtOffset: 50},
+		{ID: 103, Title: "メッシュワークス 00103", Description: "普通の椅子", CategoryID: 1, Status: "closed", EndsAtOffset: 0},
+		{ID: 104, Title: "メッシュワークス 00104", Description: "普通の椅子", CategoryID: 1, Status: "upcoming", EndsAtOffset: 600},
 	}}
 
 	// title 一致(closed / upcoming は除外される)

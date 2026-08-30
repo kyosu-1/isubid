@@ -436,7 +436,34 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 				beyondPage, len(beyond.Auctions), beyond.HasNext)
 		}
 
+		// 代表サンプルの詳細を照合する(全件は Prepare の時間予算に収まらない)
+		//
+		// 検索・カテゴリ・不正値の検証より先に走らせる。ValidateSnapshotAuctionDetail は
+		// スナップショットの status と厳密比較するため、live サンプルが Prepare 中に
+		// 期限を迎えて closed になると正しいアプリでも落ちる(最短は auction 1021 の
+		// +21秒)。検索側は期限到来を許容する集合ルールで照合していて時間経過に強いので、
+		// 脆いほうを先に済ませる。
+		for _, id := range s.Snapshot.SampleAuctionIDs {
+			sa, ok := s.Snapshot.ByID(id)
+			if !ok {
+				return fmt.Errorf("スナップショットの sample_auction_ids に載っている %d が auctions に無い", id)
+			}
+			d, err := c.GetAuction(ctx, id)
+			if err != nil {
+				return err
+			}
+			if err := ValidateSnapshotAuctionDetail(d, sa, base); err != nil {
+				return err
+			}
+		}
+
 		// 検索とカテゴリ絞り込み
+		//
+		// AND結合プローブに category=2 を選ぶ理由: probeTitleOnly に一致する live の
+		// カテゴリ内訳は {1:1, 2:2, 3:2} で、category=1 だと期待集合が1件しかなく、
+		// しかもその1件は +27秒と早い。category=2 の2件は +159秒/+3859秒で、
+		// Prepare の所要時間では期限に届かない。OR実装なら
+		// (probeTitleOnly の5件) ∪ (category=2 の live) を返すので明確に区別できる。
 		for _, probe := range []struct {
 			label      string
 			q          string
@@ -446,7 +473,7 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 			{"GET /auctions?q=" + probeDescriptionOnly + " (description専用プローブ)", probeDescriptionOnly, 0},
 			{"GET /auctions?q=" + probeNoMatch + " (該当なし)", probeNoMatch, 0},
 			{"GET /auctions?category=1", "", 1},
-			{"GET /auctions?q=" + probeTitleOnly + "&category=1 (AND結合)", probeTitleOnly, 1},
+			{"GET /auctions?q=" + probeTitleOnly + "&category=2 (AND結合)", probeTitleOnly, 2},
 		} {
 			got, totalCount, err := fetchAllAuctionPages(ctx, c,
 				AuctionListParams{Q: probe.q, Category: probe.categoryID})
@@ -469,21 +496,6 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 			}
 			if code != 400 {
 				return fmt.Errorf("GET /auctions?%s: status %d (期待: 400)", raw, code)
-			}
-		}
-
-		// 代表サンプルの詳細を照合する(全件は Prepare の時間予算に収まらない)
-		for _, id := range s.Snapshot.SampleAuctionIDs {
-			sa, ok := s.Snapshot.ByID(id)
-			if !ok {
-				return fmt.Errorf("スナップショットの sample_auction_ids に載っている %d が auctions に無い", id)
-			}
-			d, err := c.GetAuction(ctx, id)
-			if err != nil {
-				return err
-			}
-			if err := ValidateSnapshotAuctionDetail(d, sa, base); err != nil {
-				return err
 			}
 		}
 	} else {
