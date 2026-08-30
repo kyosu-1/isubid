@@ -12,8 +12,19 @@ import (
 	"github.com/isucon/isucandar/agent"
 )
 
+// initializeTimeout は POST /initialize 専用のHTTPクライアントタイムアウト。
+// レギュレーションは /initialize に30秒を許しており、このブランチのゲート1も
+// 15秒までを合格としている。一方 ag (既定10秒)は全リクエスト共通のタイムアウトで、
+// これを流用すると10〜15秒で終わる(ゲート1的には合格の)初期化がクライアント側で
+// 中断され、Prepareがtransportエラーでfailする。http.Client.Timeoutはリクエストごとの
+// contextでは上書きできないハードキャップなので、/initialize専用に別エージェントを
+// 用意する。30秒+余裕を見て60秒とし、それ以外のリクエストは既定の10秒のままにする。
+const initializeTimeout = 60 * time.Second
+
 type Client struct {
 	ag *agent.Agent
+	// initAg は POST /initialize 専用。initializeTimeout を参照。
+	initAg *agent.Agent
 }
 
 func NewClient(target string) (*Client, error) {
@@ -25,11 +36,19 @@ func NewClient(target string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{ag: ag}, nil
+	initAg, err := agent.NewAgent(
+		agent.WithBaseURL(target),
+		agent.WithTimeout(initializeTimeout),
+		agent.WithDefaultTransport(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{ag: ag, initAg: initAg}, nil
 }
 
-// doJSON はJSONリクエストを送り、ステータスとボディを返す。
-func (c *Client) doJSON(ctx context.Context, method, path string, body any) (int, []byte, error) {
+// doJSONWith はJSONリクエストを指定のエージェントで送り、ステータスとボディを返す。
+func (c *Client) doJSONWith(ctx context.Context, ag *agent.Agent, method, path string, body any) (int, []byte, error) {
 	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -38,14 +57,14 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any) (int
 		}
 		reader = bytes.NewReader(b)
 	}
-	req, err := c.ag.NewRequest(method, path, reader)
+	req, err := ag.NewRequest(method, path, reader)
 	if err != nil {
 		return 0, nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	res, err := c.ag.Do(ctx, req)
+	res, err := ag.Do(ctx, req)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -57,8 +76,13 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any) (int
 	return res.StatusCode, b, nil
 }
 
+// doJSON はJSONリクエストを既定(10秒)のエージェントで送り、ステータスとボディを返す。
+func (c *Client) doJSON(ctx context.Context, method, path string, body any) (int, []byte, error) {
+	return c.doJSONWith(ctx, c.ag, method, path, body)
+}
+
 func (c *Client) Initialize(ctx context.Context) (string, error) {
-	code, b, err := c.doJSON(ctx, http.MethodPost, "/initialize", map[string]string{})
+	code, b, err := c.doJSONWith(ctx, c.initAg, http.MethodPost, "/initialize", map[string]string{})
 	if err != nil {
 		return "", err
 	}
