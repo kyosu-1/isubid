@@ -98,9 +98,9 @@ func ValidateInitialAuctionList(list []AuctionSummary, base time.Time) error {
 // ValidateAuctionListWithSnapshot は生成データ搭載時の一覧検証。
 //
 // Phase 3 の ValidateInitialAuctionList は期待 id 列(initialAuctionOrder)との
-// 完全一致で照合していたが、生成データが入ると live は約260件になり、
-// シードと生成分が ends_at 順で交互に並ぶ。完全一致は同着やミリ秒単位のズレで
-// 壊れるため、次の性質に置き換える。
+// 完全一致で照合していたが、生成データが入ると live は合計60件(シード10 +
+// 採用スケール small の生成50)になり、シードと生成分が ends_at 順で交互に並ぶ。
+// 完全一致は同着やミリ秒単位のズレで壊れるため、次の性質に置き換える。
 //
 //	ends_at が非減少であること
 //
