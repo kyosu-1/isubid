@@ -417,7 +417,8 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 		if err != nil {
 			return err
 		}
-		if err := ValidateAuctionListWithSnapshot(all, totalCount, s.Snapshot, base); err != nil {
+		// now は取得後に採る。取得中に期限が来たオークションを許容するため。
+		if err := ValidateAuctionListWithSnapshot(all, totalCount, s.Snapshot, base, time.Now().UTC()); err != nil {
 			return err
 		}
 		// 範囲外ページ: 200 / 空配列 / has_next=false
@@ -434,6 +435,43 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 			return fmt.Errorf("GET /auctions?page=%d (範囲外): %d件 / has_next=%v (期待: 0件 / false)",
 				beyondPage, len(beyond.Auctions), beyond.HasNext)
 		}
+
+		// 検索とカテゴリ絞り込み
+		for _, probe := range []struct {
+			label      string
+			q          string
+			categoryID int64
+		}{
+			{"GET /auctions?q=" + probeTitleOnly + " (title専用プローブ)", probeTitleOnly, 0},
+			{"GET /auctions?q=" + probeDescriptionOnly + " (description専用プローブ)", probeDescriptionOnly, 0},
+			{"GET /auctions?q=" + probeNoMatch + " (該当なし)", probeNoMatch, 0},
+			{"GET /auctions?category=1", "", 1},
+			{"GET /auctions?q=" + probeTitleOnly + "&category=1 (AND結合)", probeTitleOnly, 1},
+		} {
+			got, totalCount, err := fetchAllAuctionPages(ctx, c,
+				AuctionListParams{Q: probe.q, Category: probe.categoryID})
+			if err != nil {
+				return err
+			}
+			// now は取得後に採る。取得中に期限が来たオークションを許容するため。
+			if err := ValidateSearchResult(probe.label, got, totalCount,
+				expectedLiveMatches(probe.q, probe.categoryID, s.Snapshot, base),
+				time.Now().UTC()); err != nil {
+				return err
+			}
+		}
+
+		// 不正値は 400
+		for _, raw := range []string{"page=0", "page=-1", "page=abc", "category=abc"} {
+			code, err := c.GetAuctionsRaw(ctx, raw)
+			if err != nil {
+				return err
+			}
+			if code != 400 {
+				return fmt.Errorf("GET /auctions?%s: status %d (期待: 400)", raw, code)
+			}
+		}
+
 		// 代表サンプルの詳細を照合する(全件は Prepare の時間予算に収まらない)
 		for _, id := range s.Snapshot.SampleAuctionIDs {
 			sa, ok := s.Snapshot.ByID(id)

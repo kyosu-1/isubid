@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -148,12 +149,117 @@ func ValidateInitialAuctionList(list []AuctionSummary, base time.Time) error {
 	return nil
 }
 
+// 検索検証に使うプローブ語。TestSearchProbesAreClassified が分類を固定する。
+//
+// Prepare は3つ全てを使う(スナップショットから description を知っているので
+// 期待集合を計算できる)。Load は probeTitleOnly だけを使う ——
+// 一覧レスポンスの AuctionSummary に description が無いため、description で
+// 一致した行を Load 側は検証しようがなく、正しい実装を誤判定してしまう。
+const (
+	probeTitleOnly       = "エルゴフロー"
+	probeDescriptionOnly = "職人"
+	probeNoMatch         = "ズンドコベロンチョ"
+)
+
+// expectedLiveMatches は初期データのうち probe と categoryID に合致する live
+// オークションの期待集合を返す。値はそのオークションの ends_at で、照合側が
+// 期限切れを許容できるようにするために持たせる。
+// probe が空なら語での絞り込み無し、categoryID が 0 ならカテゴリ絞り込み無し
+// (両方の絞り込みが無い場合は「live 一覧全件」の期待集合になる)。
+func expectedLiveMatches(probe string, categoryID int64, snap *Snapshot, base time.Time) map[int64]time.Time {
+	want := map[int64]time.Time{}
+	add := func(id int64, title, description string, cat int64, offset int) {
+		if probe != "" && !strings.Contains(title, probe) && !strings.Contains(description, probe) {
+			return
+		}
+		if categoryID != 0 && cat != categoryID {
+			return
+		}
+		want[id] = base.Add(time.Duration(offset) * time.Second)
+	}
+	for id, e := range expectedInitialAuctions {
+		add(id, e.Title, e.Description, e.CategoryID, e.EndsAtOffset)
+	}
+	if snap != nil {
+		for i := range snap.Auctions {
+			sa := &snap.Auctions[i]
+			if sa.Status != "live" {
+				continue
+			}
+			add(sa.ID, sa.Title, sa.Description, sa.CategoryID, sa.EndsAtOffset)
+		}
+	}
+	return want
+}
+
+// ValidateSearchResult は一覧・検索・絞り込みの「全ページ走査で連結した結果」を
+// 期待集合と照合する。Prepare 専用(Load 中は出品ワーカーが期待集合に無い
+// オークションを増やすため成立しない)。
+//
+// E = 走査開始時点の期待集合(want)、D = 走査中に ends_at が到来した E の部分集合、
+// R = 実際に返ってきた行の集合として、次の3つだけを検査する。
+//
+//	R ⊆ E                          期待集合に無い id が返ってきたら常に異常
+//	E \ D ⊆ R                      期限がまだ来ていないものが欠けていたら異常
+//	|E| - |D| ≤ total_count ≤ |E|
+//
+// len(R) == total_count の厳密一致は意図的に課さない。全ページを走査している
+// 途中で先頭側のオークションの期限が到来し、終了処理バッチがそれを closed に
+// すると、page 1 で既に返された行は最終ページ取得時点の total_count には
+// 含まれない。すなわち len(R) > total_count が正しいアプリでも起きる
+// (生成 live の最短期限は初期化から +15秒、シード auction 4 は +12秒で、
+// ページ走査ぶんリクエスト数の増えた Prepare はこの窓に近い)。
+//
+// 検出力は落ちない。「total_count を len(auctions) で返す」改悪は page 1 で
+// has_next=false になって走査が20件で止まるため、total_count が期限未到来の
+// 期待件数を下回って捕まる。「LIMIT を無視して全件返す」改悪は
+// ValidatePagedListShape の1ページ20件上限で捕まる。
+//
+// now は全ページを取り終えた後の時刻を渡すこと。取得前の時刻を渡すと
+// 「取得中に期限が来た」ケースを許容できず false-FAIL になる。
+func ValidateSearchResult(label string, got []AuctionSummary, totalCount int64,
+	want map[int64]time.Time, now time.Time) error {
+
+	gotIDs := make(map[int64]bool, len(got))
+	for _, a := range got {
+		if gotIDs[a.ID] {
+			return fmt.Errorf("%s: id=%d が重複している(全ページを通して同じ id が2回返った)", label, a.ID)
+		}
+		gotIDs[a.ID] = true
+		if _, ok := want[a.ID]; !ok {
+			return fmt.Errorf("%s: 期待集合に無い auction %d (title=%q) が返った", label, a.ID, a.Title)
+		}
+		if a.Status != "live" {
+			return fmt.Errorf("%s: auction %d の status が %q (期待: live)", label, a.ID, a.Status)
+		}
+	}
+
+	var stillLive int64
+	for id, endsAt := range want {
+		if !endsAt.After(now) {
+			continue // 期限到来済み。欠けていてよい
+		}
+		stillLive++
+		if !gotIDs[id] {
+			return fmt.Errorf("%s: 期限前(%v)の auction %d が結果に含まれていない", label, endsAt, id)
+		}
+	}
+
+	if totalCount > int64(len(want)) {
+		return fmt.Errorf("%s: total_count が %d (期待: %d以下、期待集合の件数)", label, totalCount, len(want))
+	}
+	if totalCount < stillLive {
+		return fmt.Errorf("%s: total_count が %d (期待: %d以上、期限未到来の期待件数)", label, totalCount, stillLive)
+	}
+	return nil
+}
+
 // ValidateAuctionListWithSnapshot は生成データ搭載時の一覧検証。
 //
 // Prepare 専用。Load からは呼んではならない: 全ページ分の連結済み列を要求する
-// 時点で複数レスポンスにまたがる検査であり、Load 中は終了処理バッチが live を
-// 減らし出品ワーカーが増やすため、この関数が要求する「全ページ合計が期待件数と
-// 一致」「total_count が全ページ合計と一致」はどちらも成立するとは限らない
+// 時点で複数レスポンスにまたがる検査であり、しかも期待集合を初期データだけから
+// 組み立てる。Load 中は出品ワーカーが初期データに無いオークションを増やすため、
+// この関数が要求する「返ってきた id は全て期待集合に含まれる」は成立しない
 // (正しいアプリを false-FAIL させる)。Load から呼べる単一レスポンス内不変条件は
 // ValidatePagedListShape を使うこと。
 //
@@ -174,26 +280,30 @@ func ValidateInitialAuctionList(list []AuctionSummary, base time.Time) error {
 // 検査する必要はなく、むしろ id 相関の前提が崩れた場合に正しい一覧を誤検出
 // しかねないため、あえて入れていない。
 //
-// 加えて、全ページ走査で連結した列に対して次の2点も検査する:
-//   - total_count が全ページ合計の件数と厳密に一致すること
-//   - id がページを跨いで重複していないこと
-func ValidateAuctionListWithSnapshot(all []AuctionSummary, totalCount int64, snap *Snapshot, base time.Time) error {
-	want := int64(len(expectedInitialAuctions)) + snap.Counts.LiveAuctions
-	if int64(len(all)) != want {
-		return fmt.Errorf("GET /auctions: 全ページ合計が %d件 (期待: %d = シード %d + 生成 %d)。"+
-			"Prepare が初期データの期限切れ窓(最短でシード auction 4 の +12秒)に入っている可能性もある",
-			len(all), want, len(expectedInitialAuctions), snap.Counts.LiveAuctions)
+// 加えて、全ページ走査で連結した列に対して集合としての照合も行う。これは
+// 絞り込み無し(probe 空・category 0)の期待集合を作って ValidateSearchResult に
+// 委ねる —— すなわち「返ってきた id は全て期待集合に含まれる」「期限未到来の
+// 期待要素は全て返ってきている」「total_count が期限未到来件数以上・期待集合の
+// 件数以下」の3点で、id のページ跨ぎ重複もここで検出される。
+//
+// 「全ページ合計 == 期待件数」「total_count == 全ページ合計」の厳密一致は
+// 意図的に課していない。走査の途中で先頭側のオークションの期限が到来して
+// closed になると、正しいアプリでも両方が破れるため(理由の詳細は
+// ValidateSearchResult のコメント参照)。
+//
+// now は全ページを取り終えた後の時刻を渡すこと。
+func ValidateAuctionListWithSnapshot(all []AuctionSummary, totalCount int64, snap *Snapshot, base, now time.Time) error {
+	want := expectedLiveMatches("", 0, snap, base)
+	// スナップショット自身の整合性チェック。counts.live_auctions と auctions 配列の
+	// live 件数が食い違うと期待集合が過小になり、正しいアプリを落としてしまう。
+	// これはアプリではなくベンチ側データの不具合なので、そうと分かる文言にする。
+	if wantCount := int64(len(expectedInitialAuctions)) + snap.Counts.LiveAuctions; int64(len(want)) != wantCount {
+		return fmt.Errorf("スナップショットが不整合: 期待集合が %d件だが counts から導くと %d件 "+
+			"(= シード %d + 生成 live %d)。auctions 配列に live が全て載っていない可能性がある",
+			len(want), wantCount, len(expectedInitialAuctions), snap.Counts.LiveAuctions)
 	}
-	if totalCount != int64(len(all)) {
-		return fmt.Errorf("GET /auctions: total_count が %d、全ページ合計が %d件で不一致",
-			totalCount, len(all))
-	}
-	seen := make(map[int64]bool, len(all))
-	for _, a := range all {
-		if seen[a.ID] {
-			return fmt.Errorf("GET /auctions: id=%d がページを跨いで重複している", a.ID)
-		}
-		seen[a.ID] = true
+	if err := ValidateSearchResult("GET /auctions", all, totalCount, want, now); err != nil {
+		return err
 	}
 
 	// ends_at が非減少

@@ -660,16 +660,19 @@ func validAuctionListFixture() (build func() []AuctionSummary, snap *Snapshot, b
 
 func TestValidateAuctionListWithSnapshot(t *testing.T) {
 	build, snap, base := validAuctionListFixture()
+	// base を now として渡す。フィクスチャの ends_at オフセットは全て正なので、
+	// 「まだ1件も期限が到来していない」= 全件が返ってくるべき状態になる。
+	now := base
 
 	full := build()
-	if err := ValidateAuctionListWithSnapshot(full, int64(len(full)), snap, base); err != nil {
+	if err := ValidateAuctionListWithSnapshot(full, int64(len(full)), snap, base, now); err != nil {
 		t.Fatalf("正しい一覧が拒否された: %v", err)
 	}
 
 	// ends_at が降順に混ざると落ちる
 	bad := build()
 	bad[0], bad[1] = bad[1], bad[0]
-	if err := ValidateAuctionListWithSnapshot(bad, int64(len(bad)), snap, base); err == nil {
+	if err := ValidateAuctionListWithSnapshot(bad, int64(len(bad)), snap, base, now); err == nil {
 		t.Error("ends_at の順序違反が検出されなかった")
 	}
 
@@ -677,15 +680,22 @@ func TestValidateAuctionListWithSnapshot(t *testing.T) {
 	// ends_at 非減少性に違反するため拒否される
 	byID := build()
 	sort.Slice(byID, func(i, j int) bool { return byID[i].ID < byID[j].ID })
-	if err := ValidateAuctionListWithSnapshot(byID, int64(len(byID)), snap, base); err == nil {
+	if err := ValidateAuctionListWithSnapshot(byID, int64(len(byID)), snap, base, now); err == nil {
 		t.Error("id 昇順ソート(ORDER BY id ASC 相当)が検出されなかった")
 	}
 
-	// 件数が合わないと落ちる(total_count は全ページ合計と揃えたまま、
-	// 全ページ合計そのものが期待件数と食い違うケース)
+	// 期限前のオークションが欠けていると落ちる(末尾の seed 9 は +3840秒で
+	// now より十分先なので、欠落は期限到来では説明できない)
 	short := build()[:len(build())-1]
-	if err := ValidateAuctionListWithSnapshot(short, int64(len(short)), snap, base); err == nil {
-		t.Error("件数不一致が検出されなかった")
+	if err := ValidateAuctionListWithSnapshot(short, int64(len(short)), snap, base, now); err == nil {
+		t.Error("期限前オークションの欠落が検出されなかった")
+	}
+
+	// 期待集合に無い id が混ざると落ちる
+	alien := build()
+	alien[0].ID = 9999
+	if err := ValidateAuctionListWithSnapshot(alien, int64(len(alien)), snap, base, now); err == nil {
+		t.Error("期待集合に無い id が検出されなかった")
 	}
 
 	// 生成オークションのフィールドが改変されると落ちる
@@ -695,24 +705,67 @@ func TestValidateAuctionListWithSnapshot(t *testing.T) {
 			tampered[i].CurrentPrice = 9999
 		}
 	}
-	if err := ValidateAuctionListWithSnapshot(tampered, int64(len(tampered)), snap, base); err == nil {
+	if err := ValidateAuctionListWithSnapshot(tampered, int64(len(tampered)), snap, base, now); err == nil {
 		t.Error("生成オークションの current_price 改変が検出されなかった")
 	}
 }
 
-// total_count は全ページ合計と厳密に一致しなければならない。Prepare は静穏期に
-// 全ページを走査するため、この不一致はページ境界の移動では説明できず、
-// アプリ側の不具合(生成方法の誤り等)を示す。
-func TestValidateAuctionListWithSnapshotRejectsTotalCountMismatch(t *testing.T) {
-	// 既存テストの正常系と同じ list / snap / base を組み立てたうえで、
-	// total_count だけをずらす。
+// total_count は「期限未到来の期待件数 ≤ total_count ≤ 期待集合の件数」の範囲だけを
+// 課す。全ページ合計との厳密一致は課さない —— 走査中に先頭側の期限が到来して
+// closed になると、正しいアプリでも len(全ページ合計) > total_count が起きるため。
+func TestValidateAuctionListWithSnapshotTotalCountRange(t *testing.T) {
 	build, snap, base := validAuctionListFixture()
+	now := base
 	list := build()
-	if err := ValidateAuctionListWithSnapshot(list, int64(len(list)), snap, base); err != nil {
+	if err := ValidateAuctionListWithSnapshot(list, int64(len(list)), snap, base, now); err != nil {
 		t.Fatalf("正常系が失敗した: %v", err)
 	}
-	if err := ValidateAuctionListWithSnapshot(list, int64(len(list))+1, snap, base); err == nil {
-		t.Error("total_count が全ページ合計と食い違っているのにエラーにならない")
+	// 期待集合(13件)より大きい total_count は異常
+	if err := ValidateAuctionListWithSnapshot(list, int64(len(list))+1, snap, base, now); err == nil {
+		t.Error("期待集合より大きい total_count が検出されなかった")
+	}
+	// 期限未到来の期待件数(13件)を下回る total_count も異常。
+	// 「total_count を1ページの件数で返す」改悪がここで捕まる。
+	if err := ValidateAuctionListWithSnapshot(list, int64(len(list))-1, snap, base, now); err == nil {
+		t.Error("期限未到来の期待件数を下回る total_count が検出されなかった")
+	}
+}
+
+// 走査中に先頭側の期限が到来したケースは正しいアプリで起きるので拒否してはならない。
+// フィクスチャの最短2件(gen14 = +10秒、seed4 = +12秒)が期限を過ぎた状況を作る。
+func TestValidateAuctionListWithSnapshotAllowsMidScanExpiry(t *testing.T) {
+	build, snap, base := validAuctionListFixture()
+	now := base.Add(15 * time.Second) // gen14(+10秒)と seed4(+12秒)は期限到来済み
+	list := build()
+
+	// (a) 期限到来済みの2件が既に一覧から消えている(終了処理が間に合った)。
+	//     total_count もそれに合わせて 11。
+	dropped := list[2:]
+	if err := ValidateAuctionListWithSnapshot(dropped, int64(len(dropped)), snap, base, now); err != nil {
+		t.Errorf("期限到来済み2件の欠落が拒否された: %v", err)
+	}
+	// (b) 行はまだ返っているが、最終ページ取得時点の total_count からは
+	//     既に落ちている(len(全ページ合計)=13 > total_count=11)。
+	if err := ValidateAuctionListWithSnapshot(list, int64(len(list))-2, snap, base, now); err != nil {
+		t.Errorf("len(全ページ合計) > total_count が拒否された: %v", err)
+	}
+	// (c) ただし期限前(seed2 = +20秒)の欠落は依然として異常
+	missingLive := append(append([]AuctionSummary{}, list[:2]...), list[3:]...)
+	if err := ValidateAuctionListWithSnapshot(missingLive, int64(len(missingLive)), snap, base, now); err == nil {
+		t.Error("期限前オークションの欠落が検出されなかった")
+	}
+}
+
+// スナップショットの counts.live_auctions と auctions 配列の live 件数が
+// 食い違うと期待集合が過小になり、正しいアプリを落としてしまう。
+// アプリの不具合と取り違えないよう、専用のエラーで弾く。
+func TestValidateAuctionListWithSnapshotRejectsInconsistentSnapshot(t *testing.T) {
+	build, snap, base := validAuctionListFixture()
+	list := build()
+	snap.Counts.LiveAuctions = 4 // 実際の live は3件
+	err := ValidateAuctionListWithSnapshot(list, int64(len(list)), snap, base, base)
+	if err == nil || !strings.Contains(err.Error(), "スナップショットが不整合") {
+		t.Errorf("スナップショットの不整合が検出されなかった: %v", err)
 	}
 }
 
@@ -721,12 +774,13 @@ func TestValidateAuctionListWithSnapshotRejectsTotalCountMismatch(t *testing.T) 
 // 重複させる要素は ends_at が完全に同着(元の要素をそのままコピー)になるように
 // 作る。ends_at が異なる位置に無関係な id を挿入すると ends_at 降順違反の方が
 // 先に検出されてしまい、id 重複検知そのものの検出力を切り分けられないため。
-// 件数(len)は変えない(13件のまま)。件数だけ増やすと「全ページ合計が期待件数と
-// 不一致」の検査が id 重複より先に発火し、同様に切り分けにならない。
+// 件数(len)は変えない(13件のまま)。上書きされた側(seed 4)は期限前なので
+// 「期限前の欠落」でも捕まりうるが、重複検知は got を走査する最初のループに
+// あるためそちらが先に発火する。
 func TestValidateAuctionListWithSnapshotRejectsCrossPageDuplicateID(t *testing.T) {
 	build, snap, base := validAuctionListFixture()
 	list := build()
-	if err := ValidateAuctionListWithSnapshot(list, int64(len(list)), snap, base); err != nil {
+	if err := ValidateAuctionListWithSnapshot(list, int64(len(list)), snap, base, base); err != nil {
 		t.Fatalf("正常系が失敗した: %v", err)
 	}
 
@@ -735,8 +789,9 @@ func TestValidateAuctionListWithSnapshotRejectsCrossPageDuplicateID(t *testing.T
 	// (index 2 以降、いずれも index 0/1 の ends_at より大きい)との非減少性も壊れない。
 	dup := append([]AuctionSummary{}, list...)
 	dup[1] = dup[0]
-	if err := ValidateAuctionListWithSnapshot(dup, int64(len(dup)), snap, base); err == nil {
-		t.Error("id がページを跨いで重複しているのに検出されなかった")
+	err := ValidateAuctionListWithSnapshot(dup, int64(len(dup)), snap, base, base)
+	if err == nil || !strings.Contains(err.Error(), "重複") {
+		t.Errorf("id がページを跨いで重複しているのに検出されなかった: %v", err)
 	}
 }
 
@@ -867,5 +922,204 @@ func TestValidateSnapshotAuctionDetail(t *testing.T) {
 	closedNullPrice.WinningPrice = nil
 	if err := ValidateSnapshotAuctionDetail(closedNullPrice, closedSA, base); err == nil || !strings.Contains(err.Error(), "winning_price") {
 		t.Errorf("winning_price の null 化が検出されなかった: %v", err)
+	}
+}
+
+// TestSearchProbesAreClassified はプローブ語が「title 専用 / description 専用 /
+// どこにも無い」に厳密に属することを固定する。この分離が崩れると、
+// title LIKE と description LIKE の片側を落とした改悪を検出できなくなる。
+func TestSearchProbesAreClassified(t *testing.T) {
+	snap, err := LoadSnapshot("../initial-data/out/snapshot.json")
+	if err != nil {
+		t.Fatalf("スナップショットの読み込みに失敗: %v", err)
+	}
+
+	titles := []string{}
+	descs := []string{}
+	for _, e := range expectedInitialAuctions {
+		titles = append(titles, e.Title)
+		descs = append(descs, e.Description)
+	}
+	for _, sa := range snap.Auctions {
+		titles = append(titles, sa.Title)
+		descs = append(descs, sa.Description)
+	}
+	anyContains := func(ss []string, probe string) bool {
+		for _, s := range ss {
+			if strings.Contains(s, probe) {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !anyContains(titles, probeTitleOnly) {
+		t.Errorf("%q がどの title にも現れない", probeTitleOnly)
+	}
+	if anyContains(descs, probeTitleOnly) {
+		t.Errorf("%q が description に現れる (title 専用のはず)", probeTitleOnly)
+	}
+	if !anyContains(descs, probeDescriptionOnly) {
+		t.Errorf("%q がどの description にも現れない", probeDescriptionOnly)
+	}
+	if anyContains(titles, probeDescriptionOnly) {
+		t.Errorf("%q が title に現れる (description 専用のはず)", probeDescriptionOnly)
+	}
+	if anyContains(titles, probeNoMatch) || anyContains(descs, probeNoMatch) {
+		t.Errorf("%q がどこかに現れる (該当なしのはず)", probeNoMatch)
+	}
+
+	// LIKE のワイルドカードを含むとサーバー側のエスケープ有無で結果が変わり、
+	// Go の strings.Contains と食い違う。
+	for _, p := range []string{probeTitleOnly, probeDescriptionOnly, probeNoMatch} {
+		if strings.ContainsAny(p, `%_\`) {
+			t.Errorf("プローブ %q が LIKE のワイルドカード文字を含む", p)
+		}
+	}
+}
+
+// ValidateSearchResult は非対称なルールで照合する。期待集合の要素は ends_at が
+// 既に到来していれば欠けていてよく(走査中に終了処理バッチが closed にしうる)、
+// 期待集合に無い id が返るのは常に異常。total_count は
+// 「期限未到来の期待件数 ≤ total_count ≤ 期待集合の件数」の範囲だけを課し、
+// 全ページ合計との厳密一致は課さない。
+func TestValidateSearchResult(t *testing.T) {
+	now := time.Now().UTC()
+	future := now.Add(time.Hour)
+	past := now.Add(-time.Minute)
+
+	want := map[int64]time.Time{1: future, 2: future, 3: past}
+	live := []AuctionSummary{
+		{ID: 1, Status: "live", EndsAt: future},
+		{ID: 2, Status: "live", EndsAt: future},
+	}
+
+	// 期限到来済みの 3 が欠けていても通る
+	if err := ValidateSearchResult("t", live, 2, want, now); err != nil {
+		t.Errorf("期限切れの欠落が拒否された: %v", err)
+	}
+	// 3 が返ってきても(まだ closed にされていない)通る
+	withPast := append(append([]AuctionSummary{}, live...), AuctionSummary{ID: 3, Status: "live", EndsAt: past})
+	if err := ValidateSearchResult("t", withPast, 3, want, now); err != nil {
+		t.Errorf("期限切れが残っているだけで拒否された: %v", err)
+	}
+	// 期限前の 2 が欠けていたら異常
+	if err := ValidateSearchResult("t", live[:1], 1, want, now); err == nil {
+		t.Error("期限前の欠落が検出されない")
+	}
+	// 期待集合に無い id が混ざったら異常
+	extra := append(append([]AuctionSummary{}, live...), AuctionSummary{ID: 99, Status: "live", EndsAt: future})
+	if err := ValidateSearchResult("t", extra, 3, want, now); err == nil {
+		t.Error("期待集合外の id が検出されない")
+	}
+	// live 以外が混ざったら異常
+	notLive := []AuctionSummary{{ID: 1, Status: "closed", EndsAt: future}}
+	if err := ValidateSearchResult("t", notLive, 1, want, now); err == nil {
+		t.Error("live以外の混入が検出されない")
+	}
+	// total_count が期待集合より大きいのは異常
+	if err := ValidateSearchResult("t", live, 99, want, now); err == nil {
+		t.Error("過大な total_count が検出されない")
+	}
+	// total_count が期限未到来の期待件数を下回るのは異常
+	// (行はすべて返っているので、欠落チェックではなく total_count の範囲で捕まる)
+	if err := ValidateSearchResult("t", live, 1, want, now); err == nil {
+		t.Error("過小な total_count が検出されない")
+	}
+	// 重複
+	dup := []AuctionSummary{live[0], live[0]}
+	if err := ValidateSearchResult("t", dup, 2, want, now); err == nil {
+		t.Error("id の重複が検出されない")
+	}
+}
+
+// 「全ページを走査している途中で先頭側の期限が到来し、終了処理バッチが closed に
+// した」ケースは正しいアプリで起きる。page 1 で既に返した行は最終ページ取得時点の
+// total_count に含まれないため len(got) > total_count になるが、これは異常ではない。
+// 厳密一致を課すとこの状況で正しいアプリを落とす(false-FAIL)。
+func TestValidateSearchResultAllowsMidScanExpiry(t *testing.T) {
+	now := time.Now().UTC()
+	future := now.Add(time.Hour)
+	past := now.Add(-time.Minute)
+
+	// 1 はまだ live、2 と 3 は走査中に期限が到来して closed 化された。
+	// ただし page 1 で返された行としては手元に残っている。
+	want := map[int64]time.Time{1: future, 2: past, 3: past}
+	got := []AuctionSummary{
+		{ID: 2, Status: "live", EndsAt: past},
+		{ID: 3, Status: "live", EndsAt: past},
+		{ID: 1, Status: "live", EndsAt: future},
+	}
+	// 最終ページ取得時点の total_count は 1(2,3 は既に closed)。
+	if err := ValidateSearchResult("t", got, 1, want, now); err != nil {
+		t.Errorf("走査中の期限到来による len(got) > total_count が拒否された: %v", err)
+	}
+}
+
+// 「total_count を len(auctions) で返す」改悪は、page 1 で has_next=false になって
+// 走査が1ページ(最大20件)で止まるため、期限未到来の期待件数を満たせず捕まる。
+func TestValidateSearchResultDetectsTotalCountAsPageLen(t *testing.T) {
+	now := time.Now().UTC()
+	future := now.Add(time.Hour)
+
+	// 期待集合は60件。全て期限前。
+	want := map[int64]time.Time{}
+	var got []AuctionSummary
+	for id := int64(1); id <= 60; id++ {
+		want[id] = future
+		if id <= auctionsPerPage {
+			got = append(got, AuctionSummary{ID: id, Status: "live", EndsAt: future})
+		}
+	}
+	if err := ValidateSearchResult("t", got, int64(len(got)), want, now); err == nil {
+		t.Error("total_count を1ページの件数で返す改悪が検出されない")
+	}
+}
+
+// expectedLiveMatches は probe / categoryID の絞り込みを AND で適用し、
+// live 以外(closed / upcoming)を期待集合に入れてはならない。
+func TestExpectedLiveMatches(t *testing.T) {
+	base := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	snap := &Snapshot{Auctions: []SnapshotAuction{
+		{ID: 100, Title: "エルゴフロー X", Description: "普通の椅子", CategoryID: 1, Status: "live", EndsAtOffset: 30},
+		{ID: 101, Title: "普通の椅子", Description: "職人による手作業の仕上げ", CategoryID: 2, Status: "live", EndsAtOffset: 40},
+		{ID: 102, Title: "エルゴフロー Y", Description: "普通の椅子", CategoryID: 2, Status: "live", EndsAtOffset: 50},
+		{ID: 103, Title: "エルゴフロー Z", Description: "普通の椅子", CategoryID: 1, Status: "closed", EndsAtOffset: 0},
+		{ID: 104, Title: "エルゴフロー W", Description: "普通の椅子", CategoryID: 1, Status: "upcoming", EndsAtOffset: 600},
+	}}
+
+	// title 一致(closed / upcoming は除外される)
+	got := expectedLiveMatches(probeTitleOnly, 0, snap, base)
+	if len(got) != 2 || got[100].IsZero() || got[102].IsZero() {
+		t.Errorf("title プローブの期待集合が %v (期待: 100,102 の2件)", got)
+	}
+	if want := base.Add(30 * time.Second); !got[100].Equal(want) {
+		t.Errorf("ends_at が %v (期待: %v)", got[100], want)
+	}
+	// description 一致
+	if got := expectedLiveMatches(probeDescriptionOnly, 0, snap, base); len(got) != 1 || got[101].IsZero() {
+		t.Errorf("description プローブの期待集合が %v (期待: 101 の1件)", got)
+	}
+	// 該当なし
+	if got := expectedLiveMatches(probeNoMatch, 0, snap, base); len(got) != 0 {
+		t.Errorf("該当なしプローブの期待集合が %v (期待: 空)", got)
+	}
+	// probe と category は AND。category=1 の生成 live は 100 のみ。
+	if got := expectedLiveMatches(probeTitleOnly, 1, snap, base); len(got) != 1 || got[100].IsZero() {
+		t.Errorf("AND 結合の期待集合が %v (期待: 100 の1件)", got)
+	}
+	// 絞り込み無しはシード10件 + 生成 live 3件
+	if got := expectedLiveMatches("", 0, snap, base); len(got) != len(expectedInitialAuctions)+3 {
+		t.Errorf("絞り込み無しの期待集合が %d件 (期待: %d件)", len(got), len(expectedInitialAuctions)+3)
+	}
+	// カテゴリのみの絞り込みにはシードも含まれる(id 2,4,7,10 が category 1)
+	cat1 := expectedLiveMatches("", 1, snap, base)
+	for _, id := range []int64{2, 4, 7, 10, 100} {
+		if _, ok := cat1[id]; !ok {
+			t.Errorf("category=1 の期待集合に %d が含まれていない", id)
+		}
+	}
+	if len(cat1) != 5 {
+		t.Errorf("category=1 の期待集合が %d件 (期待: 5件)", len(cat1))
 	}
 }
