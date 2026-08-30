@@ -104,6 +104,15 @@ floor = max(1, 走行秒数 / 10)
 | `GET /notifications` | 513回 |
 | `POST /auctions` | **493回** ← 最小 |
 
+> **訂正(4-E1 最終レビュー Important-2、`docs/phase4-notes.md` 持ち越し24)。**
+> 上表は単一の走行ではない。`3250 / 1723 / 1137 / 1137 / 513 / 493` は
+> `docs/superpowers/plans/2026-08-30-isubid-phase4b-list-search.md` の Task 8
+> レビュー実測表に実在するが、一覧の行だけ同表の 2125 ではなく別走行(4-B ゲート3)の
+> 2078 に差し替わっており、合計10331回はどの単一走行とも一致しない
+> (Task 8 表どおりなら10378、4-B ゲート3 どおりなら10532)。**493 自体は捏造ではなく
+> 実在する値**だが、表全体としては2本の走行を混ぜたハイブリッドである。floor 6 の
+> 結論は最小値がどちらの走行でも 484〜496回のレンジに収まるため変わらない。
+
 floor 6 は最小値の 1/80 であり、誤検知(false-FAIL)の余地はほぼ無い。同時に
 「0回」だけでなく「ほぼ死んでいる」状態も捕まえられる。走行時間に比例させることで、
 デバッグ目的で `-duration 10s` のように短く走らせても壊れない。
@@ -136,10 +145,17 @@ LIVENESS: FAIL (floor 6回)
   POST /auctions/:id/bids  : 0回
 ```
 
-通過した場合は1行にまとめる。
+通過した場合は1行にまとめる。**「採点対象全体の本数」ではなく「判定対象(= floor を
+課した本数)の本数」を出す。** `-sellers 0` のようにワーカーを止めた走行では
+判定対象が採点対象より少なくなるため、無条件に採点対象の総数を出すと
+「7本すべて到達」のような事実と異なる表示になる(4-E1 最終レビュー Important-1)。
 
 ```
-LIVENESS: PASS (floor 6回、採点7本すべて到達)
+LIVENESS: PASS (floor 6回、判定対象7/7本すべて到達)
+```
+
+```
+LIVENESS: PASS (floor 6回、判定対象6/7本すべて到達)   # 例: -sellers 0
 ```
 
 **ゲート3の目視確認をこの行が置き換える。** ゲート手順から「目視で確認」を削除し、
@@ -154,6 +170,13 @@ errorPenalty: 1 → 20
 成功1リクエストあたりの平均得点は 4-B の実測で約 1.85点(19086点 / 10331回)なので、
 **エラー1件 = 成功約11リクエストぶんの損失**になる。上限の100件で 2000点、raw 19086 に
 対して約 10.5% の減点。
+
+> **訂正(4-E1 最終レビュー Important-2、`docs/phase4-notes.md` 持ち越し24)。**
+> 分母の10331は上表と同じハイブリッドの合計で、どの単一走行とも一致しない。分子の
+> raw 19086 は 4-B ゲート3 の値なので、分子と分母が別走行から来ていた。4-B ゲート3
+> の実測ログ1本で閉じると `raw 19086 ÷ 成功10532回` = **約1.81点/回**になる
+> (`bench/score.go` の `errorPenalty` コメントは本フェーズでこの値に訂正済み)。
+> 20 という `errorPenalty` の値の妥当性には影響しない差である。
 
 | エラー件数 | 減点 | raw 19086 に対する割合 |
 |---|---|---|
@@ -172,10 +195,18 @@ errorPenalty: 1 → 20
 
 | ファイル | 変更 |
 |---|---|
-| `bench/score.go` | `errorPenalty` を 20 へ。liveness floor の定義とワーカー対応表 |
+| `bench/score.go` | `errorPenalty` を 20 へ |
+| `bench/liveness.go`(新規) | liveness floor・`livenessRequired` の定義とワーカー対応表 |
+| `bench/liveness_test.go`(新規) | floor 判定・ワーカー条件付けの単体テスト |
 | `bench/main.go` | floor 判定と `LIVENESS:` 行の出力。`pass` 条件に floor を追加 |
-| `bench/main_test.go`(新規) | floor 判定の単体テスト |
+| `bench/scenario.go` | `Load` にワーカー数0以下なら `Process` を呼ばないガードを追加(4-E1 最終レビュー Minor-1: `livenessRequired` の条件付けが実際に到達可能になるための前提) |
 | `docs/phase4-notes.md` | ゲート3の手順から「目視で確認」を削除し `LIVENESS: PASS` へ差し替え。持ち越し2 を「4-E1 で対応済み」と明記 |
+
+> **訂正(4-E1 最終レビュー Minor-1)。** 上表は当初計画時点のもので、実装は
+> `bench/main_test.go` ではなく `bench/liveness.go` + `bench/liveness_test.go` に
+> 分離した。また当初は影響範囲に挙げていなかった `bench/scenario.go` のガードが
+> 実装時に必要と判明し追加された(`docs/phase4-notes.md` 持ち越し23)。上表は
+> 実際の変更ファイルに合わせて訂正済み。
 
 `webapp/go` と `initial-data` は変更しない。
 

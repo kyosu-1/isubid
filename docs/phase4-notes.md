@@ -1222,13 +1222,19 @@ full:   PREPARE: PASS   ... 14.319 total
   **いずれにせよこれは採用スケールに依存する絶対値であり、割合ベースではない**
   (持ち越し22)。
 
-### ゲート測定(2026-08-30、本ブランチ HEAD `7ec58c1`)
+### ゲート測定(2026-08-31、本ブランチ HEAD `7ec58c1`。ただし下表のゲート3再測定・
+ゲート1再測定は持ち越し23 のガードを入れたあとの `4482f34` 時点)
 
 以下のブロックはいずれもツールの実出力の転記である。
 
 **実行順(nginx のアクセスログのタイムスタンプで確認した実際の順序):**
 
-| 時刻 | 走行 |
+**下表の時刻は nginx コンテナのログのタイムスタンプであり UTC である。**
+`dev/compose.yaml` に `TZ` 指定が無く、ローカル(コミット時刻)は JST(+0900)なので、
+下表の時刻に9時間を足すと JST になる(例: `18:20:05` → JST `03:20:05`、
+すなわち `7ec58c1` コミット `03:16:38` の4分後)。
+
+| 時刻(UTC) | 走行 |
 |---|---|
 | 18:20:05 | ゲート1 |
 | 18:21:42 | ゲート2 初回(無条件 `Sleep`。Prepare が死んで空振り) |
@@ -1238,8 +1244,16 @@ full:   PREPARE: PASS   ... 14.319 total
 | — | `docker compose restart app nginx` |
 | 18:31:50 | ゲート4 |
 | 18:32:26 | ゲート3(一時パッチ版) |
-| 翌日 | **ゲート3 再測定(持ち越し23 を修正後、素の手順)** |
-| 翌日 | **ゲート1 再測定(持ち越し23 の修正が通常走行に影響しないことの確認)** |
+| 同日 19:0x 頃(ガード `4482f34` 適用後) | **ゲート3 再測定(持ち越し23 を修正後、素の手順)** |
+| 同日 19:0x 頃(ガード `4482f34` 適用後) | **ゲート1 再測定(持ち越し23 の修正が通常走行に影響しないことの確認)** |
+
+**「翌日」ではない。** `4482f34`(ワーカー数0のガードを入れたコミット)の
+コミット時刻は JST `04:05:00`(= UTC `19:05:00`)であり、全滅走行(UTC `18:27:08`)から
+**約30〜40分後・同一セッション内**である。直上の「走行環境の汚染について」が
+警告している全滅走行によるマシンの接続・CPU 枯渇は、1日空けば解消したと読める余地が
+あるが、実際には30〜40分しか空いていない(間に挟んだのは `docker compose restart
+app nginx` のみ)。ゲート1 の非回帰判定(19636 vs 18664)とゲート3 再測定の信頼度を
+読むときはこの前提で扱うこと(4-E1 最終レビュー Important-3)。
 
 ゲート2 は一時的な改変を投入したため、直前後に `git checkout` + 再ビルドで復元し
 `git status --short` が空であることを確認している。
@@ -1249,7 +1263,8 @@ full:   PREPARE: PASS   ... 14.319 total
 > 全滅走行はマシンの接続と CPU を枯渇させたので、間に `docker compose restart app nginx`
 > を挟んだ。復帰後の走行はエラー0件でスコアもゲート1 と同水準に戻っており、
 > 影響は残っていないと判断している。ただし
-> **ゲート1(19636)/ ゲート3パッチ版(20492)/ ゲート3再測定(19249)の差を
+> **ゲート1(19636)/ ゲート3パッチ版(20492)/ ゲート3再測定(19249。4-E1 最終レビュー
+> Important-1 対応後に `LIVENESS:` 行の新しい文言で再測定した値は20179)の差を
 > 性能比較に使ってはならない。** 全滅走行と再起動を挟んでいることに加え、
 > `-sellers 0` は出品が起きないぶん一覧の負荷特性そのものが変わるため、
 > もともとゲート1 との絶対値比較には向かない。
@@ -1432,30 +1447,36 @@ floor そのものの効果であって、減点の引き上げによるもの�
 cd bench && go run . -target http://localhost:8080 -snapshot ../initial-data/out/snapshot.json -sellers 0
 ```
 
-実出力(**持ち越し23 のガードを入れたあと、素の手順で再測定したもの**):
+実出力(**4-E1 最終レビュー Important-1 で `LIVENESS:` 行の文言を修正したあと、
+素の手順で再測定したもの。以前ここにあった実測(SCORE 19249。上記「走行環境の汚染に
+ついて」に値のみ記録を残した)は「`LIVENESS: PASS (…採点7本すべて到達)` が
+`POST /auctions: 0回` の隣に出る」という Important-1 の指摘そのものだったため、
+文言修正後に取り直した**):
 
 ```
-SCORE: 19249  (raw 19249, penalty 0)
-  GET /auctions            : 2336回 (2336点)
-  GET /auctions (検索)       : 2319回 (4638点)
-  GET /auctions/:id        : 3991回 (3991点)
-  POST /auctions/:id/bids  : 1215回 (6075点)
-  GET /auctions/:id/bids   : 1215回 (1215点)
-  GET /notifications       : 497回 (994点)
+SCORE: 20179  (raw 20179, penalty 0)
+  GET /auctions            : 2478回 (2478点)
+  GET /auctions (検索)       : 2444回 (4888点)
+  GET /auctions/:id        : 4200回 (4200点)
+  POST /auctions/:id/bids  : 1262回 (6310点)
+  GET /auctions/:id/bids   : 1261回 (1261点)
+  GET /notifications       : 521回 (1042点)
   POST /auctions           : 0回 (0点)
 ERRORS: 0件 (critical: 0件)
-LIVENESS: PASS (floor 6回、採点7本すべて到達)
+LIVENESS: PASS (floor 6回、判定対象6/7本すべて到達)
 RESULT: PASS
 ```
 
-exit code 0、stderr は0行、所要 1:06.93。
+exit code 0、stderr は0行、所要 1:07.23。
 **`POST /auctions` が 0回でも `LIVENESS: PASS` / `RESULT: PASS`、critical 0件。**
-`livenessRequired` の条件付けは意図どおり働いている。
-内訳の検算: 2336×1 + 2319×2 + 3991×1 + 1215×5 + 1215×1 + 497×2 + 0×5
-= 2336 + 4638 + 3991 + 6075 + 1215 + 994 + 0 = **19249 = raw**。penalty 0。一致。
+`livenessRequired` の条件付けは意図どおり働いており、**表示も「判定対象6/7本」と
+正しく採点対象7本中の判定対象数を出している**(Important-1 修正前は「採点7本すべて
+到達」と表示され、`POST /auctions` が判定対象外であることが読み取れなかった)。
+内訳の検算: 2478×1 + 2444×2 + 4200×1 + 1262×5 + 1261×1 + 521×2 + 0×5
+= 2478 + 4888 + 4200 + 6310 + 1261 + 1042 + 0 = **20179 = raw**。penalty 0。一致。
 
 ワーカーが実際に止まっていることは nginx のアクセスログでも裏を取った。
-この走行中の総リクエスト13524件のうち、**出品(`"POST /auctions HTTP"`)は0件**:
+この走行中の総リクエスト14213件のうち、**出品(`"POST /auctions HTTP"`)は0件**:
 
 ```
 $ docker compose -f dev/compose.yaml logs --no-log-prefix nginx | tail -n +<走行前の行数+1> \
@@ -1640,12 +1661,40 @@ Prepare リクエスト数を数えるために繰り返したもので、その
   floor を上げるのではなく持ち越し21(エンドポイント単位のエラー率)や
   レイテンシ基準など別の軸を足すほうが素直である —— floor を実測の最小値へ
   近づけると、スケールやワーカー数を変えたときに正しい実装を落としやすくなる。
+- **持ち越し26: `-N 0` ガード(`bench/scenario.go` の `Load`)自体を守る committed
+  テストが無い。** 実機のゲート3 再測定(nginx ログで出品0件を確認)でしか裏付けが
+  無く、`TestLivenessRequiredRespectsWorkerCounts`(`bench/liveness_test.go`)は
+  条件付けの側だけを固定していてガードそのものは守っていない
+  (4-E1 実装時点の判断。`Load` はネットワークと `worker.Process` に依存するため
+  素直には単体テストにしづらいと判断した)。
+  **4-E1 最終レビューがこの判断を改めさせた: 守るべきはガードの実装そのものではなく
+  「ガードが要る理由」—— isucandar の `worker.WithMaxParallelism(0)` が
+  `limit < 1` を「上限なし」と解釈するという upstream の挙動 —— であり、そちらなら
+  ネットワーク不要の characterization test として15行程度で書ける。**
+
+  ```go
+  var n int64
+  w, _ := worker.NewWorker(
+      func(ctx context.Context, _ int) { atomic.AddInt64(&n, 1); <-ctx.Done() },
+      worker.WithInfinityLoop(), worker.WithMaxParallelism(0))
+  ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+  defer cancel()
+  w.Process(ctx)
+  // n が数千に達する = limit 0 は「上限なし」と解釈されている
+  ```
+
+  これは isucandar を将来上げて `isLimitKept` の挙動が直った場合や、誰かが
+  「limit=0 ならワーカーは動かないはずだ」と考えて `bench/scenario.go` のガードを
+  外した場合に、テストが理由を名指しする。**テストの実装はこのウェーブでは行わず、
+  4-E の作業として残す。**
 - **軽微な持ち越し(4-E で手が入る際についでに直すもの)**:
-  - `LIVENESS: PASS` のメッセージが `採点7本すべて到達` と `len(scoredTags)` を
+  - ~~`LIVENESS: PASS` のメッセージが `採点7本すべて到達` と `len(scoredTags)` を
     そのまま出すため、`livenessRequired == false` で判定対象外になったタグがあっても
-    「7本すべて」と表示される。上記ゲート3の実測がまさにその状態
-    (`POST /auctions` は0回なのに「採点7本すべて到達」)。表示のみの問題だが
-    読み手を誤解させる。判定対象の本数を数えて出すのが素直。
+    「7本すべて」と表示される。~~
+    **→ 4-E1 最終レビュー Important-1 で対応済み。** `LIVENESS: PASS` は
+    `livenessRequired` で判定対象になった本数を数えて `判定対象N/M本すべて到達` と
+    表示するよう `bench/main.go` を修正した。下記「ゲート3(ワーカーを止めても
+    誤検知しないこと)」の実測を新しい文言で再測定済み。
   - `LIVENESS: FAIL` 時に表示されるのは floor を下回ったタグのみで、
     `livenessRequired == false` で判定対象外にしたタグは出力に現れない。
     デバッグ時に「なぜ対象外なのか」が分からない。実害なし。

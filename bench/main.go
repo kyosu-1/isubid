@@ -106,7 +106,13 @@ func main() {
 	}
 	dead := checkLiveness(breakdown, floor, workers)
 	if len(dead) == 0 {
-		fmt.Printf("LIVENESS: PASS (floor %d回、採点%d本すべて到達)\n", floor, len(scoredTags))
+		checked := 0
+		for _, st := range scoredTags {
+			if livenessRequired(st.Tag, workers) {
+				checked++
+			}
+		}
+		fmt.Printf("LIVENESS: PASS (floor %d回、判定対象%d/%d本すべて到達)\n", floor, checked, len(scoredTags))
 	} else {
 		fmt.Printf("LIVENESS: FAIL (floor %d回)\n", floor)
 		for _, st := range dead {
