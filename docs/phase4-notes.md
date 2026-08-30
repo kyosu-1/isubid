@@ -1456,6 +1456,57 @@ bidder  イテレーション数 = GET /auctions の回数 − (GET /auctions (�
 (`554f6d8`)だけを入れる前後をその場で測ったもの。**アイコンの影響だけを分離できる
 唯一の統制された比較**なので、これを正とする。
 
+**2走行の内訳(実出力)。** 派生行(watcher/bidder イテレーション)だけを載せて
+生の内訳を残していなかった(4-C 最終レビュー Important-3)ため、
+`.superpowers/sdd/2026-08-31-isubid-phase4c-icon-blob/task-5-report.md`
+(`.superpowers/` は `.gitignore` 対象でマージすると消える)の修正ラウンド1追記分から、
+2走行のスコア内訳ブロックをそのまま転記する。
+
+before(Task 5 適用前、`1cbcfa2` 相当のコード):
+
+```
+SCORE: 18389  (raw 18389, penalty 0)
+  GET /auctions            : 1999回 (1999点)
+  GET /auctions (検索)       : 1508回 (3016点)
+  GET /auctions/:id        : 3475回 (3475点)
+  POST /auctions/:id/bids  : 1099回 (5495点)
+  GET /auctions/:id/bids   : 1099回 (1099点)
+  GET /notifications       : 485回 (970点)
+  POST /auctions           : 467回 (2335点)
+ERRORS: 0件 (critical: 0件)
+LIVENESS: PASS (floor 6回、判定対象7/7本すべて到達)
+RESULT: PASS
+```
+
+検算(count × weight = points): GET /auctions 1999×1=1999 ✓ / GET /auctions(検索)
+1508×2=3016 ✓ / GET /auctions/:id 3475×1=3475 ✓ / POST /auctions/:id/bids
+1099×5=5495 ✓ / GET /auctions/:id/bids 1099×1=1099 ✓ / GET /notifications
+485×2=970 ✓ / POST /auctions 467×5=2335 ✓。合計 1999+3016+3475+5495+1099+970+2335
+= 18389 = raw。penalty 0 なので SCORE = raw。一致。
+
+after(Task 5 適用後、`554f6d8` そのもの。committed 版への復元・再ビルド・
+git status クリーンを確認した状態での再測定):
+
+```
+SCORE: 17669  (raw 17669, penalty 0)
+  GET /auctions            : 1909回 (1909点)
+  GET /auctions (検索)       : 1304回 (2608点)
+  GET /auctions/:id        : 3180回 (3180点)
+  POST /auctions/:id/bids  : 1099回 (5495点)
+  GET /auctions/:id/bids   : 1099回 (1099点)
+  GET /notifications       : 489回 (978点)
+  POST /auctions           : 480回 (2400点)
+ERRORS: 0件 (critical: 0件)
+LIVENESS: PASS (floor 6回、判定対象7/7本すべて到達)
+RESULT: PASS
+```
+
+検算(count × weight = points): GET /auctions 1909×1=1909 ✓ / GET /auctions(検索)
+1304×2=2608 ✓ / GET /auctions/:id 3180×1=3180 ✓ / POST /auctions/:id/bids
+1099×5=5495 ✓ / GET /auctions/:id/bids 1099×1=1099 ✓ / GET /notifications
+489×2=978 ✓ / POST /auctions 480×5=2400 ✓。合計 1909+2608+3180+5495+1099+978+2400
+= 17669 = raw。penalty 0 なので SCORE = raw。一致。
+
 | | before(18389) | after(17669) | 変化 |
 |---|---:|---:|---:|
 | **watcher イテレーション**(= 検索 × 1.5) | 2262.0 | 1956.0 | **-13.5%** |
@@ -1464,7 +1515,8 @@ bidder  イテレーション数 = GET /auctions の回数 − (GET /auctions (�
 | `POST /auctions` | 467 | 480 | +2.8% |
 | (参考・**希釈値**)`GET /auctions` | 1999 | 1909 | -4.5% |
 
-→ **watcher イテレーション スループット -13.5%、他ワーカーは ±1% の横ばい。**
+→ **watcher イテレーション スループット -13.5%(1σ ±2.2pp)、bidder は ±1%
+(ゼロと区別不能)、通知・出品ワーカーは ±3%。**
 これが 4-C のアイコンレバーの実寸である。
 
 **独立確認(本節 G2 と 4-E1 ゲート1 の比較)。** 別セッション・別日の測定なので
@@ -1681,10 +1733,17 @@ $ wc -c initial-data/out/91_users.sql
   - 設計文書 §6-1 が想定した検出マトリクス「**Prepare / Load の sha256 照合**」は
     **Prepare 側しか実証されていない。**
   - `2ac4cfe` で入れた `statusErr → ErrApplication` / `contentErr → ErrCritical` の
-    **マッピングそのものが未検証である。** `bench/main.go` の
-    `failure.IsCode(e, ErrCritical)` が真になる走行が1本も無い以上、
-    「sha256 不一致は critical、5xx は減点」という設計が実機で成り立つことは
-    **まだ何も示されていない。**
+    **アイコンの呼び出し箇所での配線(`bench/load.go:276-284` の8行)が未検証である。**
+    `bench/main.go` の `failure.IsCode(e, ErrCritical)` が真になる走行がアイコン
+    経路について1本も無い以上、「sha256 不一致は critical、5xx は減点」という設計が
+    この呼び出し箇所で実機どおりに動くことは**まだ何も示されていない。**
+    **`ErrCritical` の配管そのものは未実証ではない**——`failure.IsCode(e, ErrCritical)`
+    が真になり `ERRORS: N件 (critical: N件)` として発火する経路自体は 4-A/4-B の
+    Load critical で実証済みである(4-A ゲート4・2回目走行の
+    `ERR: load: critical: auction 1155: フィードの金額が単調増加でない` /
+    `ERRORS: 3件 (critical: 3件)`、4-B ゲート4改悪7の `ERRORS: 63件 (critical: 63件)`)。
+    未実証なのは**アイコンの呼び出し箇所だけ**であり、4-E で `failure.IsCode` 自体の
+    配線を再検証する必要はない。
   - **共有されているのは純関数 `ValidateUserIcon` だけで、呼び出し側の配線は別物。**
     Task 4(`1cbcfa2`)のレビューが行った実機の変異テストは Prepare のみを追加した
     コミットに対するもので、結果も `PREPARE: FAIL` だった。Load への組み込み
