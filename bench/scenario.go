@@ -346,6 +346,47 @@ func (s *Scenario) validateNotifications(ctx context.Context, step *isucandar.Be
 	}
 }
 
+// maxAuctionPages は全ページ走査の安全上限。has_next が常に true を返す実装に
+// 当たってもベンチが止まらないようにする。small の live 60件で3ページ、
+// full の 210件でも11ページなので十分な余裕がある。
+const maxAuctionPages = 100
+
+// fetchAllAuctionPages は has_next が false になるまで全ページを辿り、
+// 連結した列と最後に観測した total_count を返す。
+//
+// total_count はページ間で減ることを許容する(Prepare 中に終了処理バッチが
+// live を closed にしうるため)。増えることは許容しない。
+func fetchAllAuctionPages(ctx context.Context, c *Client, p AuctionListParams) ([]AuctionSummary, int64, error) {
+	var all []AuctionSummary
+	var totalCount int64
+	for page := 1; ; page++ {
+		if page > maxAuctionPages {
+			return nil, 0, fmt.Errorf("GET /auctions: has_next が %dページ辿っても false にならない", maxAuctionPages)
+		}
+		p.Page = page
+		l, err := c.GetAuctions(ctx, p)
+		if err != nil {
+			return nil, 0, err
+		}
+		if err := ValidatePagedListShape(page, l); err != nil {
+			return nil, 0, err
+		}
+		if page > 1 && l.TotalCount > totalCount {
+			return nil, 0, fmt.Errorf("GET /auctions: total_count がページを進めて増えた (page %d: %d → page %d: %d)",
+				page-1, totalCount, page, l.TotalCount)
+		}
+		totalCount = l.TotalCount
+		if l.HasNext && len(l.Auctions) != auctionsPerPage {
+			return nil, 0, fmt.Errorf("GET /auctions?page=%d: has_next が true なのに %d件 (期待: %d件)",
+				page, len(l.Auctions), auctionsPerPage)
+		}
+		all = append(all, l.Auctions...)
+		if !l.HasNext {
+			return all, totalCount, nil
+		}
+	}
+}
+
 func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) error {
 	c, err := NewClient(s.Target)
 	if err != nil {
@@ -365,14 +406,23 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 	}
 
 	// 2. 初期データの検証
-	l, err := c.GetAuctions(ctx, AuctionListParams{})
-	if err != nil {
-		return err
-	}
-	list := l.Auctions
 	if s.Snapshot != nil {
-		if err := ValidateAuctionListWithSnapshot(list, s.Snapshot, base); err != nil {
+		all, totalCount, err := fetchAllAuctionPages(ctx, c, AuctionListParams{})
+		if err != nil {
 			return err
+		}
+		if err := ValidateAuctionListWithSnapshot(all, totalCount, s.Snapshot, base); err != nil {
+			return err
+		}
+		// 範囲外ページ: 200 / 空配列 / has_next=false
+		lastPage := int((totalCount + auctionsPerPage - 1) / auctionsPerPage)
+		beyond, err := c.GetAuctions(ctx, AuctionListParams{Page: lastPage + 1})
+		if err != nil {
+			return err
+		}
+		if len(beyond.Auctions) != 0 || beyond.HasNext {
+			return fmt.Errorf("GET /auctions?page=%d (範囲外): %d件 / has_next=%v (期待: 0件 / false)",
+				lastPage+1, len(beyond.Auctions), beyond.HasNext)
 		}
 		// 代表サンプルの詳細を照合する(全件は Prepare の時間予算に収まらない)
 		for _, id := range s.Snapshot.SampleAuctionIDs {
@@ -389,7 +439,11 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 			}
 		}
 	} else {
-		if err := ValidateInitialAuctionList(list, base); err != nil {
+		l, err := c.GetAuctions(ctx, AuctionListParams{})
+		if err != nil {
+			return err
+		}
+		if err := ValidateInitialAuctionList(l.Auctions, base); err != nil {
 			return err
 		}
 	}

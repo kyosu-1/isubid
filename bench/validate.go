@@ -9,6 +9,7 @@ import (
 // webapp/go/initialize.go の auctionEndOffsets に一致させること(あちらが正)。
 type expectedAuction struct {
 	Title        string
+	Description  string
 	CurrentPrice int64
 	BidCount     int64
 	SellerID     int64
@@ -17,16 +18,16 @@ type expectedAuction struct {
 }
 
 var expectedInitialAuctions = map[int64]expectedAuction{
-	1:  {"ヘリテージ・ウィングチェア", 1500, 3, 1, 3, 3600},
-	2:  {"エルゴホスト Model E", 2100, 1, 2, 1, 20},
-	3:  {"ISUレーサー GT", 3100, 1, 3, 2, 3660},
-	4:  {"メッシュフロー 40", 4100, 1, 4, 1, 12},
-	5:  {"ミッドセンチュリー・ラウンジ", 2500, 0, 5, 3, 3720},
-	6:  {"ネオンストライク Z", 3000, 0, 6, 2, 36},
-	7:  {"スタンドフレックス", 3500, 0, 7, 1, 3780},
-	8:  {"チャーチチェア 1920", 4000, 0, 8, 3, 28},
-	9:  {"プロシート・エディション", 4500, 0, 9, 2, 3840},
-	10: {"コンパクトワーク 01", 5000, 0, 10, 1, 44},
+	1:  {"ヘリテージ・ウィングチェア", "英国アンティークの本革ウィングチェア", 1500, 3, 1, 3, 3600},
+	2:  {"エルゴホスト Model E", "長時間作業向けエルゴノミクスチェア", 2100, 1, 2, 1, 20},
+	3:  {"ISUレーサー GT", "フルバケット型ゲーミングチェア", 3100, 1, 3, 2, 3660},
+	4:  {"メッシュフロー 40", "通気性メッシュのタスクチェア", 4100, 1, 4, 1, 12},
+	5:  {"ミッドセンチュリー・ラウンジ", "1960年代のラウンジチェア", 2500, 0, 5, 3, 3720},
+	6:  {"ネオンストライク Z", "RGBライト内蔵ゲーミングチェア", 3000, 0, 6, 2, 36},
+	7:  {"スタンドフレックス", "昇降デスク対応ハイチェア", 3500, 0, 7, 1, 3780},
+	8:  {"チャーチチェア 1920", "教会で使われていた木製チェア", 4000, 0, 8, 3, 28},
+	9:  {"プロシート・エディション", "eスポーツチーム監修モデル", 4500, 0, 9, 2, 3840},
+	10: {"コンパクトワーク 01", "省スペース設計のワークチェア", 5000, 0, 10, 1, 44},
 }
 
 // initialAuctionOrder は ends_at 昇順に並べた期待 id 列。id 昇順と一致しないことが重要
@@ -53,6 +54,49 @@ var expectedAuction1Bids = []expectedBid{
 
 func pad2(n int64) string {
 	return fmt.Sprintf("%02d", n)
+}
+
+// auctionsPerPage は参照実装の1ページ件数。
+// webapp/go/auctions.go の同名定数と手で揃えること(モジュールが別なので
+// コンパイル時に照合する手段が無い)。
+const auctionsPerPage = 20
+
+// ValidatePagedListShape は一覧レスポンス1件だけで完結する不変条件を検証する。
+//
+// Load 中は終了処理バッチが live を減らし、出品ワーカーが増やすため、オフセット
+// ページネーションのページ境界は足元で動く。したがって複数レスポンスにまたがる
+// 検査(ページ間で id が重複しない・全ページの和が total_count と一致する 等)は
+// ここでは決して行わない。それらは静穏期である Prepare の仕事。
+func ValidatePagedListShape(page int, l *AuctionList) error {
+	if l.Auctions == nil {
+		return fmt.Errorf("GET /auctions?page=%d: auctions が null (期待: 空でも [])", page)
+	}
+	if len(l.Auctions) > auctionsPerPage {
+		return fmt.Errorf("GET /auctions?page=%d: %d件 (期待: %d件以下)",
+			page, len(l.Auctions), auctionsPerPage)
+	}
+	if l.TotalCount < int64(len(l.Auctions)) {
+		return fmt.Errorf("GET /auctions?page=%d: total_count %d が返却件数 %d を下回る",
+			page, l.TotalCount, len(l.Auctions))
+	}
+	if want := int64(page)*auctionsPerPage < l.TotalCount; l.HasNext != want {
+		return fmt.Errorf("GET /auctions?page=%d: has_next が %v (期待: %v, total_count=%d)",
+			page, l.HasNext, want, l.TotalCount)
+	}
+	for i := 1; i < len(l.Auctions); i++ {
+		if l.Auctions[i].EndsAt.Before(l.Auctions[i-1].EndsAt) {
+			return fmt.Errorf("GET /auctions?page=%d: ends_at が昇順でない (index %d: id=%d %v の前が id=%d %v)",
+				page, i, l.Auctions[i].ID, l.Auctions[i].EndsAt,
+				l.Auctions[i-1].ID, l.Auctions[i-1].EndsAt)
+		}
+	}
+	for _, a := range l.Auctions {
+		if a.Status != "live" {
+			return fmt.Errorf("GET /auctions?page=%d: live以外が混入 (id=%d status=%q)",
+				page, a.ID, a.Status)
+		}
+	}
+	return nil
 }
 
 func ValidateInitialAuctionList(list []AuctionSummary, base time.Time) error {
@@ -113,23 +157,35 @@ func ValidateInitialAuctionList(list []AuctionSummary, base time.Time) error {
 // このチェックに引っかかる。id 昇順である/でないを別の性質として直接
 // 検査する必要はなく、むしろ id 相関の前提が崩れた場合に正しい一覧を誤検出
 // しかねないため、あえて入れていない。
-func ValidateAuctionListWithSnapshot(list []AuctionSummary, snap *Snapshot, base time.Time) error {
+func ValidateAuctionListWithSnapshot(all []AuctionSummary, totalCount int64, snap *Snapshot, base time.Time) error {
 	want := int64(len(expectedInitialAuctions)) + snap.Counts.LiveAuctions
-	if int64(len(list)) != want {
-		return fmt.Errorf("GET /auctions: 件数が %d (期待: %d = シード %d + 生成 %d)",
-			len(list), want, len(expectedInitialAuctions), snap.Counts.LiveAuctions)
+	if int64(len(all)) != want {
+		return fmt.Errorf("GET /auctions: 全ページ合計が %d件 (期待: %d = シード %d + 生成 %d)。"+
+			"Prepare が初期データの期限切れ窓(最短でシード auction 4 の +12秒)に入っている可能性もある",
+			len(all), want, len(expectedInitialAuctions), snap.Counts.LiveAuctions)
+	}
+	if totalCount != int64(len(all)) {
+		return fmt.Errorf("GET /auctions: total_count が %d、全ページ合計が %d件で不一致",
+			totalCount, len(all))
+	}
+	seen := make(map[int64]bool, len(all))
+	for _, a := range all {
+		if seen[a.ID] {
+			return fmt.Errorf("GET /auctions: id=%d がページを跨いで重複している", a.ID)
+		}
+		seen[a.ID] = true
 	}
 
 	// ends_at が非減少
-	for i := 1; i < len(list); i++ {
-		if list[i].EndsAt.Before(list[i-1].EndsAt) {
+	for i := 1; i < len(all); i++ {
+		if all[i].EndsAt.Before(all[i-1].EndsAt) {
 			return fmt.Errorf("GET /auctions: ends_at が昇順でない (index %d: id=%d %v の前が id=%d %v)",
-				i, list[i].ID, list[i].EndsAt, list[i-1].ID, list[i-1].EndsAt)
+				i, all[i].ID, all[i].EndsAt, all[i-1].ID, all[i-1].EndsAt)
 		}
 	}
 
 	// 各行の中身を、シードは既存の期待値表、生成分はスナップショットと照合する
-	for _, a := range list {
+	for _, a := range all {
 		if a.Status != "live" {
 			return fmt.Errorf("auction %d: status が %q (期待: live)", a.ID, a.Status)
 		}

@@ -601,9 +601,15 @@ func TestValidateAuctionClosedIfDue(t *testing.T) {
 // 相関しないよう作られているため(生成側は TestGeneratedLiveEndsAtNotCorrelatedWithID
 // が保証)、ORDER BY ends_at ASC を ORDER BY id ASC に書き換える改変はこの
 // 1性質だけで検出できる。
-func TestValidateAuctionListWithSnapshot(t *testing.T) {
-	base := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
-	snap := &Snapshot{
+// validAuctionListFixture は生成データ搭載時の一覧検証テストで共通して使う土台を
+// 組み立てる。build() は呼び出すたびに独立した(ends_at 昇順の)正しい一覧を返す。
+//
+// TestValidateAuctionListWithSnapshot と
+// TestValidateAuctionListWithSnapshotRejectsTotalCountMismatch の両方から使う
+// (既存テストにこの用途の共通関数が無かったため、このタスクで切り出した)。
+func validAuctionListFixture() (build func() []AuctionSummary, snap *Snapshot, base time.Time) {
+	base = time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	snap = &Snapshot{
 		Counts: SnapshotCounts{LiveAuctions: 3},
 		Auctions: []SnapshotAuction{
 			{ID: 13, Title: "gen A", CategoryID: 1, SellerID: 21, SellerName: "gen_user_00021",
@@ -642,22 +648,28 @@ func TestValidateAuctionListWithSnapshot(t *testing.T) {
 	// オフセット: gen14=10, seed4=12, seed2=20, seed8=28, gen13=30, seed6=36,
 	//             seed10=44, gen15=50, seed1=3600, seed3=3660, seed5=3720, seed7=3780, seed9=3840
 	// 合計13件 = シード10件 + 生成3件。
-	build := func() []AuctionSummary {
+	build = func() []AuctionSummary {
 		out := []AuctionSummary{gen(14), seed(4), seed(2), seed(8), gen(13), seed(6), seed(10), gen(15)}
 		for _, id := range initialAuctionOrder[5:] { // 3600秒台のシード5件
 			out = append(out, seed(id))
 		}
 		return out
 	}
+	return build, snap, base
+}
 
-	if err := ValidateAuctionListWithSnapshot(build(), snap, base); err != nil {
+func TestValidateAuctionListWithSnapshot(t *testing.T) {
+	build, snap, base := validAuctionListFixture()
+
+	full := build()
+	if err := ValidateAuctionListWithSnapshot(full, int64(len(full)), snap, base); err != nil {
 		t.Fatalf("正しい一覧が拒否された: %v", err)
 	}
 
 	// ends_at が降順に混ざると落ちる
 	bad := build()
 	bad[0], bad[1] = bad[1], bad[0]
-	if err := ValidateAuctionListWithSnapshot(bad, snap, base); err == nil {
+	if err := ValidateAuctionListWithSnapshot(bad, int64(len(bad)), snap, base); err == nil {
 		t.Error("ends_at の順序違反が検出されなかった")
 	}
 
@@ -665,13 +677,14 @@ func TestValidateAuctionListWithSnapshot(t *testing.T) {
 	// ends_at 非減少性に違反するため拒否される
 	byID := build()
 	sort.Slice(byID, func(i, j int) bool { return byID[i].ID < byID[j].ID })
-	if err := ValidateAuctionListWithSnapshot(byID, snap, base); err == nil {
+	if err := ValidateAuctionListWithSnapshot(byID, int64(len(byID)), snap, base); err == nil {
 		t.Error("id 昇順ソート(ORDER BY id ASC 相当)が検出されなかった")
 	}
 
-	// 件数が合わないと落ちる
+	// 件数が合わないと落ちる(total_count は全ページ合計と揃えたまま、
+	// 全ページ合計そのものが期待件数と食い違うケース)
 	short := build()[:len(build())-1]
-	if err := ValidateAuctionListWithSnapshot(short, snap, base); err == nil {
+	if err := ValidateAuctionListWithSnapshot(short, int64(len(short)), snap, base); err == nil {
 		t.Error("件数不一致が検出されなかった")
 	}
 
@@ -682,8 +695,63 @@ func TestValidateAuctionListWithSnapshot(t *testing.T) {
 			tampered[i].CurrentPrice = 9999
 		}
 	}
-	if err := ValidateAuctionListWithSnapshot(tampered, snap, base); err == nil {
+	if err := ValidateAuctionListWithSnapshot(tampered, int64(len(tampered)), snap, base); err == nil {
 		t.Error("生成オークションの current_price 改変が検出されなかった")
+	}
+}
+
+// total_count は全ページ合計と厳密に一致しなければならない。Prepare は静穏期に
+// 全ページを走査するため、この不一致はページ境界の移動では説明できず、
+// アプリ側の不具合(生成方法の誤り等)を示す。
+func TestValidateAuctionListWithSnapshotRejectsTotalCountMismatch(t *testing.T) {
+	// 既存テストの正常系と同じ list / snap / base を組み立てたうえで、
+	// total_count だけをずらす。
+	build, snap, base := validAuctionListFixture()
+	list := build()
+	if err := ValidateAuctionListWithSnapshot(list, int64(len(list)), snap, base); err != nil {
+		t.Fatalf("正常系が失敗した: %v", err)
+	}
+	if err := ValidateAuctionListWithSnapshot(list, int64(len(list))+1, snap, base); err == nil {
+		t.Error("total_count が全ページ合計と食い違っているのにエラーにならない")
+	}
+}
+
+func summaryAt(id int64, endsAt time.Time) AuctionSummary {
+	return AuctionSummary{ID: id, Status: "live", EndsAt: endsAt}
+}
+
+func TestValidatePagedListShape(t *testing.T) {
+	base := time.Now().UTC()
+	full := make([]AuctionSummary, 0, auctionsPerPage)
+	for i := 0; i < auctionsPerPage; i++ {
+		full = append(full, summaryAt(int64(i+1), base.Add(time.Duration(i)*time.Second)))
+	}
+
+	for _, tt := range []struct {
+		name    string
+		page    int
+		list    AuctionList
+		wantErr bool
+	}{
+		{"正常な1ページ目", 1, AuctionList{Auctions: full, TotalCount: 25, HasNext: true}, false},
+		{"正常な最終ページ", 2, AuctionList{Auctions: full[:5], TotalCount: 25, HasNext: false}, false},
+		{"auctions が null", 1, AuctionList{Auctions: nil, TotalCount: 0, HasNext: false}, true},
+		{"件数が上限超過", 1, AuctionList{Auctions: append(append([]AuctionSummary{}, full...), summaryAt(99, base)), TotalCount: 25, HasNext: true}, true},
+		{"total_count が件数未満", 1, AuctionList{Auctions: full, TotalCount: 3, HasNext: false}, true},
+		{"has_next が不整合", 1, AuctionList{Auctions: full, TotalCount: 25, HasNext: false}, true},
+		{"ends_at が降順", 1, AuctionList{Auctions: []AuctionSummary{
+			summaryAt(1, base.Add(time.Minute)), summaryAt(2, base),
+		}, TotalCount: 2, HasNext: false}, true},
+		{"live 以外が混入", 1, AuctionList{Auctions: []AuctionSummary{
+			{ID: 1, Status: "closed", EndsAt: base},
+		}, TotalCount: 1, HasNext: false}, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidatePagedListShape(tt.page, &tt.list)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("err = %v, wantErr = %v", err, tt.wantErr)
+			}
+		})
 	}
 }
 
