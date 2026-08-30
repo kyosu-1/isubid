@@ -1008,14 +1008,24 @@ func TestValidateSnapshotAuctionDetailToleratesEndsAtSkew(t *testing.T) {
 // TestSearchProbesAreClassified はプローブ語が「title 専用 / description 専用 /
 // どこにも無い」に厳密に属することを固定する。この分離が崩れると、
 // title LIKE と description LIKE の片側を落とした改悪を検出できなくなる。
+//
+// sellerTitles・sellerDescription(bench/load.go, sellerIteration が Load 中に
+// 出品するオークションの title/description)もここで走査する。Load の q 検査は
+// 一覧レスポンスに description が無いため title 一致のみで判定しており、これが
+// 安全なのは「走行中に増える唯一のデータ源である sellerIteration の title/description
+// が probeTitleOnly を含まない」という、コード上どこにも書かれていない結合に
+// 依存しているため。ここでの検査が抜けると、将来 sellerTitles か
+// sellerDescription に probeTitleOnly を含む文字列を1つ足すだけで、正しい実装が
+// Load 中に critical FAIL する(description 側の一致で返った行を、title しか
+// 見ない Load 側が「述語に合致しない」と誤判定する)。
 func TestSearchProbesAreClassified(t *testing.T) {
 	snap, err := LoadSnapshot("../initial-data/out/snapshot.json")
 	if err != nil {
 		t.Fatalf("スナップショットの読み込みに失敗: %v", err)
 	}
 
-	titles := []string{}
-	descs := []string{}
+	titles := append([]string{}, sellerTitles...)
+	descs := []string{sellerDescription}
 	for _, e := range expectedInitialAuctions {
 		titles = append(titles, e.Title)
 		descs = append(descs, e.Description)
