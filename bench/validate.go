@@ -405,7 +405,22 @@ func ValidateSnapshotAuctionDetail(d *AuctionDetail, sa *SnapshotAuction, base t
 		return fmt.Errorf("auction %d: title が %q (期待: %q)", d.ID, d.Title, sa.Title)
 	}
 	if d.Status != sa.Status {
-		return fmt.Errorf("auction %d: status が %q (期待: %q)", d.ID, d.Status, sa.Status)
+		// スナップショットが live としているオークションは、Prepare の実行中に
+		// 終了処理バッチが closed へ移しうる。live のオフセットはシャッフルされて
+		// いるため最短で数十秒に着地し、しかもサンプルされた live は Prepare の
+		// 最後に fetch される。期限が実際に到来しているなら closed を受理する。
+		// 逆向き(closed のはずが live)や、期限前の closed は従来どおり異常とする。
+		//
+		// 期限判定には endsAtTolerance を効かせる。base はベンチが initialize の
+		// 応答を受け取った後に採られるが、アプリが基準時刻を採ったのはその少し
+		// 前なので、実際の ends_at は常に base+offset 以前になる。ここをゼロ許容に
+		// すると、初期化所要時間ぶんだけ早く closed になった正しいアプリに対して
+		// まだ live であることを要求してしまう(ValidateSearchResult と同じ根拠)。
+		dueClosed := sa.Status == "live" && d.Status == "closed" &&
+			!base.Add(time.Duration(sa.EndsAtOffset)*time.Second).Add(-endsAtTolerance).After(time.Now().UTC())
+		if !dueClosed {
+			return fmt.Errorf("auction %d: status が %q (期待: %q)", d.ID, d.Status, sa.Status)
+		}
 	}
 	if d.CategoryID != sa.CategoryID {
 		return fmt.Errorf("auction %d: category_id が %d (期待: %d)", d.ID, d.CategoryID, sa.CategoryID)

@@ -933,6 +933,78 @@ func TestValidateSnapshotAuctionDetail(t *testing.T) {
 	}
 }
 
+// スナップショットが live としているサンプルは、Prepare の実行中(特に最後に
+// fetch される)に終了処理バッチが closed へ移しうる。期限が実際に到来している
+// なら closed を受理し、期限前の closed や、逆向き(closed のはずが live)は
+// 従来どおり異常として検出し続けなければならない(4-A持ち越し7)。
+func TestValidateSnapshotAuctionDetailAcceptsClosedWhenDue(t *testing.T) {
+	base := time.Now().UTC()
+	// 期限が 1 秒前に到来している live サンプル
+	sa := &SnapshotAuction{
+		ID: 42, Title: "テスト椅子", Description: "説明", CategoryID: 1,
+		SellerID: 7, SellerName: "gen_user_00007",
+		StartingPrice: 1000, CurrentPrice: 1000, BidCount: 0,
+		Status: "live", EndsAtOffset: -1,
+	}
+	d := &AuctionDetail{
+		AuctionSummary: AuctionSummary{
+			ID: 42, Title: "テスト椅子", CategoryID: 1,
+			Seller:       User{ID: 7, Name: "gen_user_00007"},
+			CurrentPrice: 1000, BidCount: 0,
+			EndsAt: base.Add(-time.Second), Status: "closed", // バッチが閉じた
+		},
+		Description: "説明", StartingPrice: 1000, Bids: []Bid{},
+	}
+	if err := ValidateSnapshotAuctionDetail(d, sa, base); err != nil {
+		t.Errorf("期限到来済みの closed が拒否された: %v", err)
+	}
+
+	// 期限がまだ来ていないのに closed なら異常
+	sa.EndsAtOffset = 3600
+	d.EndsAt = base.Add(time.Hour)
+	if err := ValidateSnapshotAuctionDetail(d, sa, base); err == nil {
+		t.Error("期限前の closed が検出されない")
+	}
+}
+
+// base は initialize の応答受信後に採られるため、アプリが実際に持っている ends_at は
+// base+offset より最大 endsAtTolerance だけ手前になりうる。期限判定をゼロ許容にすると、
+// 正しいアプリが初期化所要時間ぶんだけ早く closed にしたオークションに対して
+// 「まだ live のはず」と要求してしまい false-FAIL になる
+// (ValidateSearchResult の TestValidateSearchResultToleratesEndsAtSkew と同じ根拠)。
+func TestValidateSnapshotAuctionDetailToleratesEndsAtSkew(t *testing.T) {
+	base := time.Now().UTC()
+
+	// 期限は「まだ来ていない」はずのオフセットだが、許容幅の内側
+	// (endsAtTolerance - 1秒)。アプリの実際の基準時刻は base よりわずかに
+	// 早いため、この時点で既に closed になっていてもおかしくない。
+	sa := &SnapshotAuction{
+		ID: 51, Title: "許容テスト", Description: "説明", CategoryID: 1,
+		SellerID: 8, SellerName: "gen_user_00008",
+		StartingPrice: 1000, CurrentPrice: 1000, BidCount: 0,
+		Status: "live", EndsAtOffset: int((endsAtTolerance - time.Second) / time.Second),
+	}
+	d := &AuctionDetail{
+		AuctionSummary: AuctionSummary{
+			ID: 51, Title: "許容テスト", CategoryID: 1,
+			Seller:       User{ID: 8, Name: "gen_user_00008"},
+			CurrentPrice: 1000, BidCount: 0,
+			EndsAt: base.Add(endsAtTolerance - time.Second), Status: "closed",
+		},
+		Description: "説明", StartingPrice: 1000, Bids: []Bid{},
+	}
+	if err := ValidateSnapshotAuctionDetail(d, sa, base); err != nil {
+		t.Errorf("許容幅内の期限ズレによる closed が拒否された: %v", err)
+	}
+
+	// 許容幅より十分先の期限なのに closed は依然として異常
+	sa.EndsAtOffset = int((endsAtTolerance + time.Minute) / time.Second)
+	d.EndsAt = base.Add(endsAtTolerance + time.Minute)
+	if err := ValidateSnapshotAuctionDetail(d, sa, base); err == nil {
+		t.Error("許容幅を超えて先の期限の closed が検出されない")
+	}
+}
+
 // TestSearchProbesAreClassified はプローブ語が「title 専用 / description 専用 /
 // どこにも無い」に厳密に属することを固定する。この分離が崩れると、
 // title LIKE と description LIKE の片側を落とした改悪を検出できなくなる。
