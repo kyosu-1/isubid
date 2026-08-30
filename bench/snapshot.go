@@ -15,6 +15,14 @@ type SnapshotCounts struct {
 	Notifications int64 `json:"notifications"`
 }
 
+// SnapshotUser は生成ユーザーの正解値。initial-data/snapshot.go の同名型と対になる。
+// IconSHA256 が空文字ならアイコン未設定(GET /users/:id/icon は 404 を返すべき)。
+type SnapshotUser struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	IconSHA256 string `json:"icon_sha256"`
+}
+
 // SnapshotAuction は初期データの正解値。initial-data/snapshot.go の同名型と対になる。
 type SnapshotAuction struct {
 	ID            int64  `json:"id"`
@@ -40,9 +48,11 @@ type Snapshot struct {
 	Scale            string            `json:"scale"`
 	Counts           SnapshotCounts    `json:"counts"`
 	SampleAuctionIDs []int64           `json:"sample_auction_ids"`
+	Users            []SnapshotUser    `json:"users"`
 	Auctions         []SnapshotAuction `json:"auctions"`
 
-	byID map[int64]*SnapshotAuction
+	byID     map[int64]*SnapshotAuction
+	userByID map[int64]*SnapshotUser
 }
 
 func LoadSnapshot(path string) (*Snapshot, error) {
@@ -58,10 +68,21 @@ func LoadSnapshot(path string) (*Snapshot, error) {
 	for i := range s.Auctions {
 		s.byID[s.Auctions[i].ID] = &s.Auctions[i]
 	}
+	s.userByID = make(map[int64]*SnapshotUser, len(s.Users))
+	for i := range s.Users {
+		s.userByID[s.Users[i].ID] = &s.Users[i]
+	}
 	return &s, nil
 }
 
 func (s *Snapshot) ByID(id int64) (*SnapshotAuction, bool) {
 	a, ok := s.byID[id]
 	return a, ok
+}
+
+// UserByID は生成ユーザーの正解値を返す。シードユーザーやベンチが走行中に
+// 作ったユーザーは載っていないので、ok が false になる。
+func (s *Snapshot) UserByID(id int64) (*SnapshotUser, bool) {
+	u, ok := s.userByID[id]
+	return u, ok
 }

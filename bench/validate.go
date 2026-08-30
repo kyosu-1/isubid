@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -635,6 +637,37 @@ func ValidateNotificationsOrdered(ns []Notification) error {
 			return fmt.Errorf("GET /notifications: id 降順でない (index %d: id=%d の前が id=%d)",
 				i, ns[i].ID, ns[i-1].ID)
 		}
+	}
+	return nil
+}
+
+// ValidateUserIcon はアイコンの応答を照合する。
+//
+// su が nil なら「スナップショットに無いユーザー」= シードユーザーか、ベンチが
+// 走行中に作った新規ユーザー。どちらもアイコンを持たないので 404 が正しい。
+//
+// sha256 を照合するのは「全ユーザーに同じ画像を返す」改悪を捕まえるためである。
+// アイコンの内容は走行中に変化しないので、ここに false-FAIL の余地は無い。
+func ValidateUserIcon(id int64, code int, contentType string, body []byte, su *SnapshotUser) error {
+	wantIcon := su != nil && su.IconSHA256 != ""
+
+	if !wantIcon {
+		if code != http.StatusNotFound {
+			return fmt.Errorf("GET /users/%d/icon: status %d (期待: 404、アイコン未設定のユーザー)", id, code)
+		}
+		return nil
+	}
+
+	if code != http.StatusOK {
+		return fmt.Errorf("GET /users/%d/icon: status %d (期待: 200)", id, code)
+	}
+	if contentType != "image/png" {
+		return fmt.Errorf("GET /users/%d/icon: Content-Type が %q (期待: image/png)", id, contentType)
+	}
+	got := fmt.Sprintf("%x", sha256.Sum256(body))
+	if got != su.IconSHA256 {
+		return fmt.Errorf("GET /users/%d/icon: 内容が不一致 (%d bytes, sha256 %s、期待: %s)",
+			id, len(body), got[:16], su.IconSHA256[:16])
 	}
 	return nil
 }
