@@ -716,6 +716,30 @@ func TestValidateAuctionListWithSnapshotRejectsTotalCountMismatch(t *testing.T) 
 	}
 }
 
+// ページを跨いで同じ id が重複していると拒否される。
+//
+// 重複させる要素は ends_at が完全に同着(元の要素をそのままコピー)になるように
+// 作る。ends_at が異なる位置に無関係な id を挿入すると ends_at 降順違反の方が
+// 先に検出されてしまい、id 重複検知そのものの検出力を切り分けられないため。
+// 件数(len)は変えない(13件のまま)。件数だけ増やすと「全ページ合計が期待件数と
+// 不一致」の検査が id 重複より先に発火し、同様に切り分けにならない。
+func TestValidateAuctionListWithSnapshotRejectsCrossPageDuplicateID(t *testing.T) {
+	build, snap, base := validAuctionListFixture()
+	list := build()
+	if err := ValidateAuctionListWithSnapshot(list, int64(len(list)), snap, base); err != nil {
+		t.Fatalf("正常系が失敗した: %v", err)
+	}
+
+	// index 0 (gen 14) を index 1 (元は seed 4) の位置にもコピーする。
+	// 同一値のコピーなので ends_at は完全に同着になり、以降の要素の ends_at
+	// (index 2 以降、いずれも index 0/1 の ends_at より大きい)との非減少性も壊れない。
+	dup := append([]AuctionSummary{}, list...)
+	dup[1] = dup[0]
+	if err := ValidateAuctionListWithSnapshot(dup, int64(len(dup)), snap, base); err == nil {
+		t.Error("id がページを跨いで重複しているのに検出されなかった")
+	}
+}
+
 func summaryAt(id int64, endsAt time.Time) AuctionSummary {
 	return AuctionSummary{ID: id, Status: "live", EndsAt: endsAt}
 }
@@ -735,8 +759,14 @@ func TestValidatePagedListShape(t *testing.T) {
 	}{
 		{"正常な1ページ目", 1, AuctionList{Auctions: full, TotalCount: 25, HasNext: true}, false},
 		{"正常な最終ページ", 2, AuctionList{Auctions: full[:5], TotalCount: 25, HasNext: false}, false},
+		{"total_count がちょうどページ境界", 1, AuctionList{Auctions: full, TotalCount: auctionsPerPage, HasNext: false}, false},
+		{"空ページ(非nilの空スライス)は正常", 2, AuctionList{Auctions: []AuctionSummary{}, TotalCount: auctionsPerPage, HasNext: false}, false},
 		{"auctions が null", 1, AuctionList{Auctions: nil, TotalCount: 0, HasNext: false}, true},
-		{"件数が上限超過", 1, AuctionList{Auctions: append(append([]AuctionSummary{}, full...), summaryAt(99, base)), TotalCount: 25, HasNext: true}, true},
+		// 21件目は20件目(index 19)の ends_at を単純に1秒延長しただけの続きにする。
+		// summaryAt(99, base) のような無関係な値だと ends_at 降順違反(index 20の直前が
+		// index 19より新しい)でも落ちてしまい、「件数が上限超過」の検査単体を
+		// 切り分けられない。
+		{"件数が上限超過", 1, AuctionList{Auctions: append(append([]AuctionSummary{}, full...), summaryAt(99, base.Add(20*time.Second))), TotalCount: 25, HasNext: true}, true},
 		{"total_count が件数未満", 1, AuctionList{Auctions: full, TotalCount: 3, HasNext: false}, true},
 		{"has_next が不整合", 1, AuctionList{Auctions: full, TotalCount: 25, HasNext: false}, true},
 		{"ends_at が降順", 1, AuctionList{Auctions: []AuctionSummary{

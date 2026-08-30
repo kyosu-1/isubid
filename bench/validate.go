@@ -67,7 +67,16 @@ const auctionsPerPage = 20
 // ページネーションのページ境界は足元で動く。したがって複数レスポンスにまたがる
 // 検査(ページ間で id が重複しない・全ページの和が total_count と一致する 等)は
 // ここでは決して行わない。それらは静穏期である Prepare の仕事。
+//
+// page は実際に要求したページ番号を渡す契約だが、page 未指定のリクエスト
+// (AuctionListParams{} など、AuctionListParams.Page のゼロ値である 0 のまま
+// 送信されるケース)を呼び出し側がそのまま渡すことがある。has_next の期待値計算は
+// ページ番号に依存するため、正規化しないと page 未指定の呼び出しで total_count>0 の
+// 限り必ず不一致になる(正しいアプリを false-FAIL させる)。
 func ValidatePagedListShape(page int, l *AuctionList) error {
+	if page <= 0 {
+		page = 1
+	}
 	if l.Auctions == nil {
 		return fmt.Errorf("GET /auctions?page=%d: auctions が null (期待: 空でも [])", page)
 	}
@@ -141,6 +150,13 @@ func ValidateInitialAuctionList(list []AuctionSummary, base time.Time) error {
 
 // ValidateAuctionListWithSnapshot は生成データ搭載時の一覧検証。
 //
+// Prepare 専用。Load からは呼んではならない: 全ページ分の連結済み列を要求する
+// 時点で複数レスポンスにまたがる検査であり、Load 中は終了処理バッチが live を
+// 減らし出品ワーカーが増やすため、この関数が要求する「全ページ合計が期待件数と
+// 一致」「total_count が全ページ合計と一致」はどちらも成立するとは限らない
+// (正しいアプリを false-FAIL させる)。Load から呼べる単一レスポンス内不変条件は
+// ValidatePagedListShape を使うこと。
+//
 // Phase 3 の ValidateInitialAuctionList は期待 id 列(initialAuctionOrder)との
 // 完全一致で照合していたが、生成データが入ると live は合計60件(シード10 +
 // 採用スケール small の生成50)になり、シードと生成分が ends_at 順で交互に並ぶ。
@@ -157,6 +173,10 @@ func ValidateInitialAuctionList(list []AuctionSummary, base time.Time) error {
 // このチェックに引っかかる。id 昇順である/でないを別の性質として直接
 // 検査する必要はなく、むしろ id 相関の前提が崩れた場合に正しい一覧を誤検出
 // しかねないため、あえて入れていない。
+//
+// 加えて、全ページ走査で連結した列に対して次の2点も検査する:
+//   - total_count が全ページ合計の件数と厳密に一致すること
+//   - id がページを跨いで重複していないこと
 func ValidateAuctionListWithSnapshot(all []AuctionSummary, totalCount int64, snap *Snapshot, base time.Time) error {
 	want := int64(len(expectedInitialAuctions)) + snap.Counts.LiveAuctions
 	if int64(len(all)) != want {

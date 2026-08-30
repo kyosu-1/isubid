@@ -348,11 +348,17 @@ func (s *Scenario) validateNotifications(ctx context.Context, step *isucandar.Be
 
 // maxAuctionPages は全ページ走査の安全上限。has_next が常に true を返す実装に
 // 当たってもベンチが止まらないようにする。small の live 60件で3ページ、
-// full の 210件でも11ページなので十分な余裕がある。
-const maxAuctionPages = 100
+// full の 210件でも11ページなので、実需に対して十分な余裕を持たせつつ、
+// 1リクエスト最大10秒(Client の既定タイムアウト)× 上限回数が際限なく
+// 伸びないよう30に抑える(100のままだと最悪 1000秒粘ってから落ちる)。
+const maxAuctionPages = 30
 
 // fetchAllAuctionPages は has_next が false になるまで全ページを辿り、
 // 連結した列と最後に観測した total_count を返す。
+//
+// Prepare 専用。Load からは呼んではならない: total_count がページを進めて
+// 増えることを拒否するが、Load 中は出品ワーカーが新規オークションを増やすため
+// これは普通に起こりうる(正しいアプリを false-FAIL させる)。
 //
 // total_count はページ間で減ることを許容する(Prepare 中に終了処理バッチが
 // live を closed にしうるため)。増えることは許容しない。
@@ -416,13 +422,17 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 		}
 		// 範囲外ページ: 200 / 空配列 / has_next=false
 		lastPage := int((totalCount + auctionsPerPage - 1) / auctionsPerPage)
-		beyond, err := c.GetAuctions(ctx, AuctionListParams{Page: lastPage + 1})
+		beyondPage := lastPage + 1
+		beyond, err := c.GetAuctions(ctx, AuctionListParams{Page: beyondPage})
 		if err != nil {
+			return err
+		}
+		if err := ValidatePagedListShape(beyondPage, beyond); err != nil {
 			return err
 		}
 		if len(beyond.Auctions) != 0 || beyond.HasNext {
 			return fmt.Errorf("GET /auctions?page=%d (範囲外): %d件 / has_next=%v (期待: 0件 / false)",
-				lastPage+1, len(beyond.Auctions), beyond.HasNext)
+				beyondPage, len(beyond.Auctions), beyond.HasNext)
 		}
 		// 代表サンプルの詳細を照合する(全件は Prepare の時間予算に収まらない)
 		for _, id := range s.Snapshot.SampleAuctionIDs {
