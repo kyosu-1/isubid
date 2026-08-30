@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -51,13 +52,19 @@ func WriteSQL(dir string, ds *Dataset) error {
 // writeChunked は n 行を rowsPerStatement ごとに区切って INSERT 文を書く。
 // row(i) は i 番目の行の "(...)" 部分を返す。
 func writeChunked(w *bufio.Writer, header string, n int, row func(i int) string) error {
+	return writeChunkedN(w, header, n, rowsPerStatement, row)
+}
+
+// writeChunkedN は1文あたりの行数を指定できる writeChunked。
+// アイコンのように1行が大きいテーブルで行数を下げるために使う。
+func writeChunkedN(w *bufio.Writer, header string, n, perStatement int, row func(i int) string) error {
 	if n == 0 {
 		// 空でも構文として成立するファイルにしておく(mysql が読んでも何もしない)
 		_, err := fmt.Fprintf(w, "-- no rows\nSELECT 1;\n")
 		return err
 	}
-	for start := 0; start < n; start += rowsPerStatement {
-		end := start + rowsPerStatement
+	for start := 0; start < n; start += perStatement {
+		end := start + perStatement
 		if end > n {
 			end = n
 		}
@@ -77,12 +84,28 @@ func writeChunked(w *bufio.Writer, header string, n int, row func(i int) string)
 	return nil
 }
 
+// usersPerStatement は users の INSERT 1文に載せる行数。
+//
+// アイコンが入ると1行が数百バイト〜数KB(バイナリが16進で2倍)になるため、
+// 他テーブルの rowsPerStatement(1000)のままだと1文が肥大する。
+// 100行なら1文あたり数百KBに収まり、MySQL の max_allowed_packet に余裕を持てる。
+const usersPerStatement = 100
+
 func writeUsers(w *bufio.Writer, ds *Dataset) error {
-	return writeChunked(w, "INSERT INTO users (id, name, password_hash) VALUES\n",
-		len(ds.Users), func(i int) string {
+	return writeChunkedN(w, "INSERT INTO users (id, name, password_hash, icon) VALUES\n",
+		len(ds.Users), usersPerStatement, func(i int) string {
 			u := ds.Users[i]
-			return fmt.Sprintf("(%d, '%s', '%s')", u.ID, u.Name, GeneratedPasswordHash)
+			return fmt.Sprintf("(%d, '%s', '%s', %s)",
+				u.ID, u.Name, GeneratedPasswordHash, iconSQL(u.Icon))
 		})
+}
+
+// iconSQL はアイコンを MySQL の16進リテラルへ変換する。nil は NULL。
+func iconSQL(b []byte) string {
+	if b == nil {
+		return "NULL"
+	}
+	return "0x" + hex.EncodeToString(b)
 }
 
 func nullInt64SQL(v *int64) string {

@@ -9,6 +9,8 @@ import (
 type User struct {
 	ID   int64
 	Name string
+	// Icon はアイコン PNG のバイト列。nil ならアイコン未設定(DB では NULL)。
+	Icon []byte
 }
 
 // generatedEpoch は live / upcoming の時刻を保持する固定基準。
@@ -114,11 +116,34 @@ func Generate(cfg Config) *Dataset {
 	return ds
 }
 
+// iconlessRate はアイコンを持たない生成ユーザーの割合。
+//
+// 実サイトに即しているだけでなく、参照実装が「icon IS NULL のユーザーに
+// 404 ではなく 200 を返す」改悪をしたときにベンチが検出できるようにするため、
+// 未設定のユーザーを必ず作る。
+const iconlessRate = 0.1
+
+// newIconRNG はアイコン専用の乱数源を作る。
+//
+// **共有の rng から引いてはならない。** generateUsers は Generate の中で
+// generateAuctions より先に呼ばれるので、共有 rng を消費すると乱数の順序が
+// ずれ、auctions / bids / notifications がすべて別物になる(コミット済み
+// ダンプの全ファイルが変わり、4-A/4-B の実測値の前提も崩れる)。
+// 独立した源から引くことで 92〜94 のダンプはバイト単位で不変に保たれる。
+func newIconRNG(seed int64) *rand.Rand {
+	return rand.New(rand.NewSource(seed ^ 0x1c04))
+}
+
 func generateUsers(cfg Config) []User {
+	iconRNG := newIconRNG(cfg.Seed)
 	users := make([]User, 0, cfg.Users)
 	for i := 0; i < cfg.Users; i++ {
 		id := int64(SeedMaxUserID + 1 + i)
-		users = append(users, User{ID: id, Name: "gen_user_" + pad5(id)})
+		u := User{ID: id, Name: "gen_user_" + pad5(id)}
+		if iconRNG.Float64() >= iconlessRate {
+			u.Icon = GenerateIcon(id)
+		}
+		users = append(users, u)
 	}
 	return users
 }

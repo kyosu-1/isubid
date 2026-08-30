@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,5 +72,40 @@ func TestWriteSQLProducesLoadableFiles(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "NULL") {
 		t.Error("92_auctions.sql に NULL(未落札の winner_id) が現れない")
+	}
+}
+
+// TestUsersSQLCarriesIconHex は users の INSERT にアイコンが16進リテラルで
+// 載り、未設定は NULL になることを固定する。
+func TestUsersSQLCarriesIconHex(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Scales["small"]
+	cfg.Seed = DefaultSeed
+	ds := Generate(cfg)
+	if err := WriteSQL(dir, ds); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "91_users.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(b)
+
+	if !strings.Contains(sql, "INSERT INTO users (id, name, password_hash, icon) VALUES") {
+		t.Error("users の INSERT に icon 列が無い")
+	}
+	if !strings.Contains(sql, ", NULL)") {
+		t.Error("アイコン未設定の NULL が書かれていない")
+	}
+	// アイコンを持つ最初のユーザーの16進リテラルが含まれること
+	for _, u := range ds.Users {
+		if u.Icon == nil {
+			continue
+		}
+		want := "0x" + hex.EncodeToString(u.Icon)
+		if !strings.Contains(sql, want) {
+			t.Errorf("user %d のアイコンが16進リテラルとして見つからない", u.ID)
+		}
+		break
 	}
 }

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -35,6 +37,14 @@ type SnapshotAuction struct {
 	WinningPrice *int64 `json:"winning_price"`
 }
 
+// SnapshotUser は生成ユーザーの正解値。
+// IconSHA256 が空文字ならアイコン未設定(GET /users/:id/icon は 404 を返すべき)。
+type SnapshotUser struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	IconSHA256 string `json:"icon_sha256"`
+}
+
 // Snapshot は初期データの正解スナップショット。bench/snapshot.go が読む側として対になる。
 //
 // 全オークションは載せない。Prepare が照合するのは一覧1ページ目・代表サンプル・
@@ -45,6 +55,7 @@ type Snapshot struct {
 	Scale            string            `json:"scale"`
 	Counts           Counts            `json:"counts"`
 	SampleAuctionIDs []int64           `json:"sample_auction_ids"`
+	Users            []SnapshotUser    `json:"users"`
 	Auctions         []SnapshotAuction `json:"auctions"`
 }
 
@@ -84,6 +95,16 @@ func BuildSnapshot(ds *Dataset) *Snapshot {
 	}
 
 	snap := &Snapshot{Seed: ds.Config.Seed, Scale: ds.Config.Name}
+
+	snap.Users = make([]SnapshotUser, 0, len(ds.Users))
+	for _, u := range ds.Users {
+		su := SnapshotUser{ID: u.ID, Name: u.Name}
+		if u.Icon != nil {
+			su.IconSHA256 = fmt.Sprintf("%x", sha256.Sum256(u.Icon))
+		}
+		snap.Users = append(snap.Users, su)
+	}
+
 	var closed []Auction
 	for _, a := range ds.Auctions {
 		switch a.Status {
