@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -346,6 +348,53 @@ func (s *Scenario) validateNotifications(ctx context.Context, step *isucandar.Be
 	}
 }
 
+// maxAuctionPages は全ページ走査の安全上限。has_next が常に true を返す実装に
+// 当たってもベンチが止まらないようにする。small の live 60件で3ページ、
+// full の 210件でも11ページなので、実需に対して十分な余裕を持たせつつ、
+// 1リクエスト最大10秒(Client の既定タイムアウト)× 上限回数が際限なく
+// 伸びないよう30に抑える(100のままだと最悪 1000秒粘ってから落ちる)。
+const maxAuctionPages = 30
+
+// fetchAllAuctionPages は has_next が false になるまで全ページを辿り、
+// 連結した列と最後に観測した total_count を返す。
+//
+// Prepare 専用。Load からは呼んではならない: total_count がページを進めて
+// 増えることを拒否するが、Load 中は出品ワーカーが新規オークションを増やすため
+// これは普通に起こりうる(正しいアプリを false-FAIL させる)。
+//
+// total_count はページ間で減ることを許容する(Prepare 中に終了処理バッチが
+// live を closed にしうるため)。増えることは許容しない。
+func fetchAllAuctionPages(ctx context.Context, c *Client, p AuctionListParams) ([]AuctionSummary, int64, error) {
+	var all []AuctionSummary
+	var totalCount int64
+	for page := 1; ; page++ {
+		if page > maxAuctionPages {
+			return nil, 0, fmt.Errorf("GET /auctions: has_next が %dページ辿っても false にならない", maxAuctionPages)
+		}
+		p.Page = page
+		l, err := c.GetAuctions(ctx, p)
+		if err != nil {
+			return nil, 0, err
+		}
+		if err := ValidatePagedListShape(page, l); err != nil {
+			return nil, 0, err
+		}
+		if page > 1 && l.TotalCount > totalCount {
+			return nil, 0, fmt.Errorf("GET /auctions: total_count がページを進めて増えた (page %d: %d → page %d: %d)",
+				page-1, totalCount, page, l.TotalCount)
+		}
+		totalCount = l.TotalCount
+		if l.HasNext && len(l.Auctions) != auctionsPerPage {
+			return nil, 0, fmt.Errorf("GET /auctions?page=%d: has_next が true なのに %d件 (期待: %d件)",
+				page, len(l.Auctions), auctionsPerPage)
+		}
+		all = append(all, l.Auctions...)
+		if !l.HasNext {
+			return all, totalCount, nil
+		}
+	}
+}
+
 func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) error {
 	c, err := NewClient(s.Target)
 	if err != nil {
@@ -365,15 +414,37 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 	}
 
 	// 2. 初期データの検証
-	list, err := c.GetAuctions(ctx)
-	if err != nil {
-		return err
-	}
 	if s.Snapshot != nil {
-		if err := ValidateAuctionListWithSnapshot(list, s.Snapshot, base); err != nil {
+		all, totalCount, err := fetchAllAuctionPages(ctx, c, AuctionListParams{})
+		if err != nil {
 			return err
 		}
+		// now は取得後に採る。取得中に期限が来たオークションを許容するため。
+		if err := ValidateAuctionListWithSnapshot(all, totalCount, s.Snapshot, base, time.Now().UTC()); err != nil {
+			return err
+		}
+		// 範囲外ページ: 200 / 空配列 / has_next=false
+		lastPage := int((totalCount + auctionsPerPage - 1) / auctionsPerPage)
+		beyondPage := lastPage + 1
+		beyond, err := c.GetAuctions(ctx, AuctionListParams{Page: beyondPage})
+		if err != nil {
+			return err
+		}
+		if err := ValidatePagedListShape(beyondPage, beyond); err != nil {
+			return err
+		}
+		if len(beyond.Auctions) != 0 || beyond.HasNext {
+			return fmt.Errorf("GET /auctions?page=%d (範囲外): %d件 / has_next=%v (期待: 0件 / false)",
+				beyondPage, len(beyond.Auctions), beyond.HasNext)
+		}
+
 		// 代表サンプルの詳細を照合する(全件は Prepare の時間予算に収まらない)
+		//
+		// 検索・カテゴリ・不正値の検証より先に走らせる。ValidateSnapshotAuctionDetail は
+		// スナップショットの status と厳密比較するため、live サンプルが Prepare 中に
+		// 期限を迎えて closed になると正しいアプリでも落ちる(最短は auction 1021 の
+		// +21秒)。検索側は期限到来を許容する集合ルールで照合していて時間経過に強いので、
+		// 脆いほうを先に済ませる。
 		for _, id := range s.Snapshot.SampleAuctionIDs {
 			sa, ok := s.Snapshot.ByID(id)
 			if !ok {
@@ -387,8 +458,57 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 				return err
 			}
 		}
+
+		// 検索とカテゴリ絞り込み
+		//
+		// AND結合プローブに category=2 を選ぶ理由: probeTitleOnly に一致する live の
+		// カテゴリ内訳は {1:1, 2:2, 3:2} で、category=1 だと期待集合が1件しかなく、
+		// しかもその1件は +27秒と早い。category=2 の2件は +159秒/+3859秒で、
+		// Prepare の所要時間では期限に届かない。OR実装なら
+		// (probeTitleOnly の5件) ∪ (category=2 の live) を返すので明確に区別できる。
+		for _, probe := range []struct {
+			label      string
+			q          string
+			categoryID int64
+		}{
+			{"GET /auctions?q=" + probeTitleOnly + " (title専用プローブ)", probeTitleOnly, 0},
+			{"GET /auctions?q=" + probeDescriptionOnly + " (description専用プローブ)", probeDescriptionOnly, 0},
+			{"GET /auctions?q=" + probeNoMatch + " (該当なし)", probeNoMatch, 0},
+			{"GET /auctions?category=1", "", 1},
+			{"GET /auctions?q=" + probeTitleOnly + "&category=2 (AND結合)", probeTitleOnly, 2},
+		} {
+			got, totalCount, err := fetchAllAuctionPages(ctx, c,
+				AuctionListParams{Q: probe.q, Category: probe.categoryID})
+			if err != nil {
+				return err
+			}
+			// now は取得後に採る。取得中に期限が来たオークションを許容するため。
+			if err := ValidateSearchResult(probe.label, got, totalCount,
+				expectedLiveMatches(probe.q, probe.categoryID, s.Snapshot, base),
+				time.Now().UTC()); err != nil {
+				return err
+			}
+		}
+
+		// 不正値は 400
+		// q=255 rune 超(256 rune)は設計 §3-4 が列挙する5件目の不正値。
+		// GetAuctionsRaw は "/auctions?" + rawQuery をそのまま送るため URL エンコードが要る。
+		longQ := "q=" + url.QueryEscape(strings.Repeat("あ", 256))
+		for _, raw := range []string{"page=0", "page=-1", "page=abc", "category=abc", longQ} {
+			code, err := c.GetAuctionsRaw(ctx, raw)
+			if err != nil {
+				return err
+			}
+			if code != 400 {
+				return fmt.Errorf("GET /auctions?%s: status %d (期待: 400)", raw, code)
+			}
+		}
 	} else {
-		if err := ValidateInitialAuctionList(list, base); err != nil {
+		l, err := c.GetAuctions(ctx, AuctionListParams{})
+		if err != nil {
+			return err
+		}
+		if err := ValidateInitialAuctionList(l.Auctions, base); err != nil {
 			return err
 		}
 	}

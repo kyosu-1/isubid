@@ -1,5 +1,6 @@
 *.test
 /bench/bench
+/initial-data/initial-data
 /webapp/go/isubid
 .DS_Store
 .superpowers/

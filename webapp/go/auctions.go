@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -102,23 +105,132 @@ func nullInt64Ptr(v sql.NullInt64) *int64 {
 	return &n
 }
 
+// auctionsPerPage は一覧1ページあたりの件数。
+// bench/validate.go の同名定数と手で揃えること(モジュールが別なので
+// コンパイル時に照合する手段が無い)。
+const auctionsPerPage = 20
+
+type auctionListResponse struct {
+	Auctions   []auctionSummary `json:"auctions"`
+	TotalCount int64            `json:"total_count"`
+	HasNext    bool             `json:"has_next"`
+}
+
+// auctionListQuery は GET /auctions のクエリパラメータ。
+type auctionListQuery struct {
+	Page     int64
+	Q        string
+	Category sql.NullInt64
+}
+
+// parseAuctionListQuery はクエリ文字列を解釈する。エラーを返した場合は 400 にする。
+// 値が空文字のパラメータは「未指定」として扱う(?page= と page 省略を同一視する)。
+func parseAuctionListQuery(v url.Values) (auctionListQuery, error) {
+	q := auctionListQuery{Page: 1}
+	if s := v.Get("page"); s != "" {
+		n, err := strconv.ParseInt(s, 10, 64)
+		// 上限を math.MaxInt64/auctionsPerPage で切る: これを超えると
+		// (q.Page-1)*auctionsPerPage や q.Page*auctionsPerPage が int64 を
+		// 溢れ、OFFSET が負値になって MySQL エラー(500)を引き起こす。
+		if err != nil || n < 1 || n > math.MaxInt64/auctionsPerPage {
+			return q, errors.New("invalid page")
+		}
+		q.Page = n
+	}
+	q.Q = v.Get("q")
+	if len([]rune(q.Q)) > 255 {
+		return q, errors.New("invalid q")
+	}
+	if s := v.Get("category"); s != "" {
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return q, errors.New("invalid category")
+		}
+		q.Category = sql.NullInt64{Int64: n, Valid: true}
+	}
+	return q, nil
+}
+
+// where は WHERE 句とバインド引数を組み立てる。COUNT と SELECT の両方が同じものを使う。
+func (q auctionListQuery) where() (string, []any) {
+	cond := "status = 'live'"
+	args := []any{}
+	if q.Q != "" {
+		// 意図的に遅い実装: 先頭ワイルドカードの LIKE は B-tree インデックスが
+		// 原理的に使えず、必ず全行スキャンになる。title と description の両方を
+		// 対象にすることで1行あたりの比較コストも上げている。
+		like := "%" + escapeLike(q.Q) + "%"
+		cond += " AND (title LIKE ? OR description LIKE ?)"
+		args = append(args, like, like)
+	}
+	if q.Category.Valid {
+		// 意図的に遅い実装: category_id にインデックスが無い。
+		cond += " AND category_id = ?"
+		args = append(args, q.Category.Int64)
+	}
+	return cond, args
+}
+
+// escapeLike は LIKE パターン中で特別な意味を持つ文字をエスケープする。
+// strings.NewReplacer は入力を1パスで走査し置換結果を再走査しないため、
+// この3文字(\ % _)の置換順序には依存しない。
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
 func (h *handler) getAuctions(w http.ResponseWriter, r *http.Request) {
-	var rows []auctionRow
-	if err := h.db.SelectContext(r.Context(), &rows,
-		"SELECT "+auctionColumns+" FROM auctions WHERE status = 'live' ORDER BY ends_at ASC, id ASC"); err != nil {
+	q, err := parseAuctionListQuery(r.URL.Query())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cond, args := q.where()
+
+	// total_count と auctions を単一トランザクション(MySQLデフォルトの REPEATABLE READ)の
+	// スナップショットから読む。別々に読むと、COUNT と SELECT のあいだに入札や終了処理が
+	// commit された場合に「total_count は 137 なのに全ページ合計は 138 件」が
+	// 正しい実装でも起きてしまう。意図的なN+1構成はそのまま維持し、読み取り一貫性のみ確保する。
+	tx, err := h.db.BeginTxx(r.Context(), nil)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	defer tx.Rollback()
+
+	var total int64
+	// 意図的に遅い実装: 検索条件つきの COUNT が SELECT と同じ WHERE をもう一度走る
+	// (LIKE 検索時はフルスキャンが2回になる)。
+	if err := tx.GetContext(r.Context(), &total,
+		"SELECT COUNT(*) FROM auctions WHERE "+cond, args...); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// 意図的に遅い実装: status / ends_at にインデックスが無いため全スキャン + filesort。
+	// OFFSET が深いほど読み捨てる行が増える。
+	pageArgs := append(append([]any{}, args...), auctionsPerPage, (q.Page-1)*auctionsPerPage)
+	var rows []auctionRow
+	if err := tx.SelectContext(r.Context(), &rows,
+		"SELECT "+auctionColumns+" FROM auctions WHERE "+cond+
+			" ORDER BY ends_at ASC, id ASC LIMIT ? OFFSET ?", pageArgs...); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	summaries := make([]auctionSummary, 0, len(rows))
 	for i := range rows {
-		s, err := h.summarize(r.Context(), h.db, &rows[i]) // 意図的に遅い実装(N+1)
+		s, err := h.summarize(r.Context(), tx, &rows[i]) // 意図的に遅い実装(N+1)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		summaries = append(summaries, *s)
 	}
-	writeJSON(w, http.StatusOK, summaries)
+	writeJSON(w, http.StatusOK, auctionListResponse{
+		Auctions:   summaries,
+		TotalCount: total,
+		HasNext:    q.Page*auctionsPerPage < total,
+	})
 }
 
 func (h *handler) getAuction(w http.ResponseWriter, r *http.Request) {

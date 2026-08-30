@@ -20,6 +20,7 @@ type Counts struct {
 type SnapshotAuction struct {
 	ID            int64  `json:"id"`
 	Title         string `json:"title"`
+	Description   string `json:"description"`
 	CategoryID    int64  `json:"category_id"`
 	SellerID      int64  `json:"seller_id"`
 	SellerName    string `json:"seller_name"`
@@ -74,7 +75,7 @@ func BuildSnapshot(ds *Dataset) *Snapshot {
 			off = int(a.EndsAt.Sub(generatedEpoch).Seconds())
 		}
 		return SnapshotAuction{
-			ID: a.ID, Title: a.Title, CategoryID: a.CategoryID,
+			ID: a.ID, Title: a.Title, Description: a.Description, CategoryID: a.CategoryID,
 			SellerID: a.SellerID, SellerName: userName[a.SellerID],
 			StartingPrice: a.StartingPrice, CurrentPrice: price,
 			BidCount: bidCount[a.ID], Status: a.Status,

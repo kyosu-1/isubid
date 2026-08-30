@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -95,12 +96,20 @@ func (s *Scenario) bidderIteration(ctx context.Context, step *isucandar.Benchmar
 		addErr(ctx, step, ErrApplication, err)
 		return
 	}
-	list, err := c.GetAuctions(ctx)
+	// 入札対象は「終了が最も近い20件」= 1ページ目から選ぶ。実サイトの挙動である
+	// と同時に、live 件数が増えても入札が分散しないようにする狙いがある
+	// (docs/phase4-notes.md 持ち越し1/9: 分散すると FOR UPDATE 検出器が発火しない)。
+	l, err := c.GetAuctions(ctx, AuctionListParams{Page: 1})
 	if err != nil {
 		addErr(ctx, step, ErrApplication, err)
 		return
 	}
 	step.AddScore(ScoreGETList)
+	if err := ValidatePagedListShape(1, l); err != nil {
+		addErr(ctx, step, ErrCritical, err)
+		return
+	}
+	list := l.Auctions
 	if len(list) == 0 {
 		addErr(ctx, step, ErrCritical, fmt.Errorf("GET /auctions: 開催中オークションが0件"))
 		return
@@ -172,23 +181,62 @@ func (s *Scenario) bidderIteration(ctx context.Context, step *isucandar.Benchmar
 	// 5連敗は人気オークションなら起こりうる。エラーにしない。
 }
 
-// watcherIteration は「一覧→ランダム詳細+不変条件チェック」の回遊。
+// watcherIteration は「一覧(ページ回遊・検索あり)→ランダム詳細+不変条件チェック」の回遊。
 func (s *Scenario) watcherIteration(ctx context.Context, step *isucandar.BenchmarkStep) {
 	c, err := NewClient(s.Target)
 	if err != nil {
 		addErr(ctx, step, ErrApplication, err)
 		return
 	}
-	list, err := c.GetAuctions(ctx)
+	page := 1 + rand.Intn(3)
+	p := AuctionListParams{Page: page}
+	tag := ScoreGETList
+	// switch の3分岐で 1/3 ずつ、q 絞り込み / category 絞り込み / 絞り込み無し を選ぶ
+	// (case 0 と case 1 の両方が絞り込みを付けるので、絞り込みを付ける確率自体は 2/3)。
+	// q は title 専用プローブに限る —— 一覧レスポンスに description が無いため、
+	// description で一致した行を走行中に検証する術がなく、正しい実装を誤判定してしまう。
+	switch rand.Intn(3) {
+	case 0:
+		p.Q = probeTitleOnly
+		// q に一致する live は初期データ由来の数件のみで、ベンチが走行中に出品する
+		// オークションは(sellerTitles・seller description がプローブ語を含まない
+		// 設計のため)絶対に一致しない。したがって一致集合は走行が進むにつれ単調に
+		// 減っていき、2ページ目以降はほぼ確実に0件になる(0件では述語検査が
+		// 一度も走らず検出力が無い)。q 分岐のときだけ page を1に固定して、
+		// 述語検査(q 一致)が実際に働くようにする。category 分岐・絞り込み無し
+		// 分岐は、走行中に増えるオークションも母集合に加わり0件に収束しないため、
+		// 従来どおり page を1〜3のランダムのままにする。
+		p.Page = 1
+		page = 1
+		tag = ScoreGETSearch
+	case 1:
+		p.Category = int64(1 + rand.Intn(3))
+		tag = ScoreGETSearch
+	}
+	l, err := c.GetAuctions(ctx, p)
 	if err != nil {
 		addErr(ctx, step, ErrApplication, err)
 		return
 	}
-	step.AddScore(ScoreGETList)
+	step.AddScore(tag)
+	if err := ValidatePagedListShape(page, l); err != nil {
+		addErr(ctx, step, ErrCritical, err)
+		return
+	}
+	list := l.Auctions
+	// 絞り込み結果は述語に合致していなければならない。これは一方向の検査である:
+	// 「期待集合にあるのに返ってこない」のは走行中なら正常(closed になった、
+	// 別ページへ移った)だが、「述語に合致しない行が返る」のは常に異常。
+	// 「返さなすぎ」は静穏期の Prepare が見る。
 	for _, a := range list {
-		if a.Status != "live" {
+		if p.Q != "" && !strings.Contains(a.Title, p.Q) {
 			addErr(ctx, step, ErrCritical,
-				fmt.Errorf("GET /auctions: live以外が混入 (id=%d status=%q)", a.ID, a.Status))
+				fmt.Errorf("GET /auctions?q=%s: title が一致しない行が返った (id=%d title=%q)", p.Q, a.ID, a.Title))
+			return
+		}
+		if p.Category != 0 && a.CategoryID != p.Category {
+			addErr(ctx, step, ErrCritical,
+				fmt.Errorf("GET /auctions?category=%d: category_id=%d の行が返った (id=%d)", p.Category, a.CategoryID, a.ID))
 			return
 		}
 	}
@@ -279,10 +327,21 @@ func (b *listingBoard) random() (int64, bool) {
 	return b.ids[rand.Intn(len(b.ids))], true
 }
 
+// sellerTitles と sellerDescription: Load 中に watcherIteration が使う q 検査
+// (probeTitleOnly による title 一致のみの判定)は、ここに書く title/description が
+// probeTitleOnly を含まないことに依存する安全条件である。一覧レスポンスの
+// AuctionSummary には description が無いため、走行中は「title が一致しない行が
+// 返ったら異常」としか検証できない。もしここの description に probeTitleOnly が
+// 混入すると、正しい実装(title・description の両方を検索対象にする)が
+// description 側の一致でその行を返しても、Load 側は title 不一致だけを見て
+// critical FAIL にしてしまう(false-FAIL)。TestSearchProbesAreClassified
+// (bench/validate_test.go)がこの結合を固定しているので、変更時はそちらも通ること。
 var sellerTitles = []string{
 	"ラピッドチェア", "オークリーフ・スツール", "ミニマルワークシート",
 	"ベルベット・オットマン", "スカンジ・ダイニング",
 }
+
+const sellerDescription = "ベンチが出品した椅子"
 
 // sellerIteration は「ログイン→出品→売上確認」の1セッション。
 // 出品したオークションは pubsub で入札者シナリオへ配信され、入札が集まる。
@@ -301,7 +360,7 @@ func (s *Scenario) sellerIteration(ctx context.Context, step *isucandar.Benchmar
 	title := sellerTitles[rand.Intn(len(sellerTitles))]
 	startingPrice := int64(1000 + rand.Intn(9)*500)
 	duration := int64(20 + rand.Intn(21)) // 20〜40秒
-	created, code, err := c.PostAuction(ctx, title, "ベンチが出品した椅子",
+	created, code, err := c.PostAuction(ctx, title, sellerDescription,
 		int64(1+rand.Intn(3)), startingPrice, duration)
 	if err != nil {
 		// 結果不明(転送エラー/5xx/ctxキャンセル): 応答を受け取れなかっただけで、サーバー側では

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -9,6 +10,7 @@ import (
 // webapp/go/initialize.go の auctionEndOffsets に一致させること(あちらが正)。
 type expectedAuction struct {
 	Title        string
+	Description  string
 	CurrentPrice int64
 	BidCount     int64
 	SellerID     int64
@@ -17,16 +19,16 @@ type expectedAuction struct {
 }
 
 var expectedInitialAuctions = map[int64]expectedAuction{
-	1:  {"ヘリテージ・ウィングチェア", 1500, 3, 1, 3, 3600},
-	2:  {"エルゴホスト Model E", 2100, 1, 2, 1, 20},
-	3:  {"ISUレーサー GT", 3100, 1, 3, 2, 3660},
-	4:  {"メッシュフロー 40", 4100, 1, 4, 1, 12},
-	5:  {"ミッドセンチュリー・ラウンジ", 2500, 0, 5, 3, 3720},
-	6:  {"ネオンストライク Z", 3000, 0, 6, 2, 36},
-	7:  {"スタンドフレックス", 3500, 0, 7, 1, 3780},
-	8:  {"チャーチチェア 1920", 4000, 0, 8, 3, 28},
-	9:  {"プロシート・エディション", 4500, 0, 9, 2, 3840},
-	10: {"コンパクトワーク 01", 5000, 0, 10, 1, 44},
+	1:  {"ヘリテージ・ウィングチェア", "英国アンティークの本革ウィングチェア", 1500, 3, 1, 3, 3600},
+	2:  {"エルゴホスト Model E", "長時間作業向けエルゴノミクスチェア", 2100, 1, 2, 1, 20},
+	3:  {"ISUレーサー GT", "フルバケット型ゲーミングチェア", 3100, 1, 3, 2, 3660},
+	4:  {"メッシュフロー 40", "通気性メッシュのタスクチェア", 4100, 1, 4, 1, 12},
+	5:  {"ミッドセンチュリー・ラウンジ", "1960年代のラウンジチェア", 2500, 0, 5, 3, 3720},
+	6:  {"ネオンストライク Z", "RGBライト内蔵ゲーミングチェア", 3000, 0, 6, 2, 36},
+	7:  {"スタンドフレックス", "昇降デスク対応ハイチェア", 3500, 0, 7, 1, 3780},
+	8:  {"チャーチチェア 1920", "教会で使われていた木製チェア", 4000, 0, 8, 3, 28},
+	9:  {"プロシート・エディション", "eスポーツチーム監修モデル", 4500, 0, 9, 2, 3840},
+	10: {"コンパクトワーク 01", "省スペース設計のワークチェア", 5000, 0, 10, 1, 44},
 }
 
 // initialAuctionOrder は ends_at 昇順に並べた期待 id 列。id 昇順と一致しないことが重要
@@ -53,6 +55,58 @@ var expectedAuction1Bids = []expectedBid{
 
 func pad2(n int64) string {
 	return fmt.Sprintf("%02d", n)
+}
+
+// auctionsPerPage は参照実装の1ページ件数。
+// webapp/go/auctions.go の同名定数と手で揃えること(モジュールが別なので
+// コンパイル時に照合する手段が無い)。
+const auctionsPerPage = 20
+
+// ValidatePagedListShape は一覧レスポンス1件だけで完結する不変条件を検証する。
+//
+// Load 中は終了処理バッチが live を減らし、出品ワーカーが増やすため、オフセット
+// ページネーションのページ境界は足元で動く。したがって複数レスポンスにまたがる
+// 検査(ページ間で id が重複しない・全ページの和が total_count と一致する 等)は
+// ここでは決して行わない。それらは静穏期である Prepare の仕事。
+//
+// page は実際に要求したページ番号を渡す契約だが、page 未指定のリクエスト
+// (AuctionListParams{} など、AuctionListParams.Page のゼロ値である 0 のまま
+// 送信されるケース)を呼び出し側がそのまま渡すことがある。has_next の期待値計算は
+// ページ番号に依存するため、正規化しないと page 未指定の呼び出しで total_count>0 の
+// 限り必ず不一致になる(正しいアプリを false-FAIL させる)。
+func ValidatePagedListShape(page int, l *AuctionList) error {
+	if page <= 0 {
+		page = 1
+	}
+	if l.Auctions == nil {
+		return fmt.Errorf("GET /auctions?page=%d: auctions が null (期待: 空でも [])", page)
+	}
+	if len(l.Auctions) > auctionsPerPage {
+		return fmt.Errorf("GET /auctions?page=%d: %d件 (期待: %d件以下)",
+			page, len(l.Auctions), auctionsPerPage)
+	}
+	if l.TotalCount < int64(len(l.Auctions)) {
+		return fmt.Errorf("GET /auctions?page=%d: total_count %d が返却件数 %d を下回る",
+			page, l.TotalCount, len(l.Auctions))
+	}
+	if want := int64(page)*auctionsPerPage < l.TotalCount; l.HasNext != want {
+		return fmt.Errorf("GET /auctions?page=%d: has_next が %v (期待: %v, total_count=%d)",
+			page, l.HasNext, want, l.TotalCount)
+	}
+	for i := 1; i < len(l.Auctions); i++ {
+		if l.Auctions[i].EndsAt.Before(l.Auctions[i-1].EndsAt) {
+			return fmt.Errorf("GET /auctions?page=%d: ends_at が昇順でない (index %d: id=%d %v の前が id=%d %v)",
+				page, i, l.Auctions[i].ID, l.Auctions[i].EndsAt,
+				l.Auctions[i-1].ID, l.Auctions[i-1].EndsAt)
+		}
+	}
+	for _, a := range l.Auctions {
+		if a.Status != "live" {
+			return fmt.Errorf("GET /auctions?page=%d: live以外が混入 (id=%d status=%q)",
+				page, a.ID, a.Status)
+		}
+	}
+	return nil
 }
 
 func ValidateInitialAuctionList(list []AuctionSummary, base time.Time) error {
@@ -95,7 +149,133 @@ func ValidateInitialAuctionList(list []AuctionSummary, base time.Time) error {
 	return nil
 }
 
+// 検索検証に使うプローブ語。TestSearchProbesAreClassified が分類を固定する。
+//
+// Prepare は3つ全てを使う(スナップショットから description を知っているので
+// 期待集合を計算できる)。Load は probeTitleOnly だけを使う ——
+// 一覧レスポンスの AuctionSummary に description が無いため、description で
+// 一致した行を Load 側は検証しようがなく、正しい実装を誤判定してしまう。
+//
+// プローブは必ず「語中」に出現する語を選ぶこと。initial-data の生成タイトルは
+// chairNames の要素 + " " + 連番、description は chairDescs の要素そのものなので、
+// chairNames/chairDescs の先頭語(例: "エルゴフロー" や "職人")を選ぶと
+// 常に文字列の先頭で一致してしまい、LIKE '%q%' を LIKE 'q%'(前方一致)に
+// 書き換える改悪が同じ集合を返して素通りする。
+// "ワークス" は "メッシュワークス NNNNN" の途中、"手作業" は
+// "職人による手作業の仕上げ" の途中にしか現れないため、前方一致に落とすと
+// どちらも0件になり確実に検出できる。
+const (
+	probeTitleOnly       = "ワークス"
+	probeDescriptionOnly = "手作業"
+	probeNoMatch         = "ズンドコベロンチョ"
+)
+
+// expectedLiveMatches は初期データのうち probe と categoryID に合致する live
+// オークションの期待集合を返す。値はそのオークションの ends_at で、照合側が
+// 期限切れを許容できるようにするために持たせる。
+// probe が空なら語での絞り込み無し、categoryID が 0 ならカテゴリ絞り込み無し
+// (両方の絞り込みが無い場合は「live 一覧全件」の期待集合になる)。
+func expectedLiveMatches(probe string, categoryID int64, snap *Snapshot, base time.Time) map[int64]time.Time {
+	want := map[int64]time.Time{}
+	add := func(id int64, title, description string, cat int64, offset int) {
+		if probe != "" && !strings.Contains(title, probe) && !strings.Contains(description, probe) {
+			return
+		}
+		if categoryID != 0 && cat != categoryID {
+			return
+		}
+		want[id] = base.Add(time.Duration(offset) * time.Second)
+	}
+	for id, e := range expectedInitialAuctions {
+		add(id, e.Title, e.Description, e.CategoryID, e.EndsAtOffset)
+	}
+	if snap != nil {
+		for i := range snap.Auctions {
+			sa := &snap.Auctions[i]
+			if sa.Status != "live" {
+				continue
+			}
+			add(sa.ID, sa.Title, sa.Description, sa.CategoryID, sa.EndsAtOffset)
+		}
+	}
+	return want
+}
+
+// ValidateSearchResult は一覧・検索・絞り込みの「全ページ走査で連結した結果」を
+// 期待集合と照合する。Prepare 専用(Load 中は出品ワーカーが期待集合に無い
+// オークションを増やすため成立しない)。
+//
+// E = 走査開始時点の期待集合(want)、D = 走査中に ends_at が到来した(かもしれない)
+// E の部分集合、R = 実際に返ってきた行の集合として、次の3つだけを検査する。
+// D の判定には endsAtTolerance を効かせる(下の期限判定のコメント参照)。
+//
+//	R ⊆ E                          期待集合に無い id が返ってきたら常に異常
+//	E \ D ⊆ R                      期限がまだ来ていないものが欠けていたら異常
+//	|E| - |D| ≤ total_count ≤ |E|
+//
+// len(R) == total_count の厳密一致は意図的に課さない。全ページを走査している
+// 途中で先頭側のオークションの期限が到来し、終了処理バッチがそれを closed に
+// すると、page 1 で既に返された行は最終ページ取得時点の total_count には
+// 含まれない。すなわち len(R) > total_count が正しいアプリでも起きる
+// (生成 live の最短期限は初期化から +15秒、シード auction 4 は +12秒で、
+// ページ走査ぶんリクエスト数の増えた Prepare はこの窓に近い)。
+//
+// 検出力は落ちない。「total_count を len(auctions) で返す」改悪は page 1 で
+// has_next=false になって走査が20件で止まるため、total_count が期限未到来の
+// 期待件数を下回って捕まる。「LIMIT を無視して全件返す」改悪は
+// ValidatePagedListShape の1ページ20件上限で捕まる。
+//
+// now は全ページを取り終えた後の時刻を渡すこと。取得前の時刻を渡すと
+// 「取得中に期限が来た」ケースを許容できず false-FAIL になる。
+func ValidateSearchResult(label string, got []AuctionSummary, totalCount int64,
+	want map[int64]time.Time, now time.Time) error {
+
+	gotIDs := make(map[int64]bool, len(got))
+	for _, a := range got {
+		if gotIDs[a.ID] {
+			return fmt.Errorf("%s: id=%d が重複している(全ページを通して同じ id が2回返った)", label, a.ID)
+		}
+		gotIDs[a.ID] = true
+		if _, ok := want[a.ID]; !ok {
+			return fmt.Errorf("%s: 期待集合に無い auction %d (title=%q) が返った", label, a.ID, a.Title)
+		}
+		if a.Status != "live" {
+			return fmt.Errorf("%s: auction %d の status が %q (期待: live)", label, a.ID, a.Status)
+		}
+	}
+
+	var stillLive int64
+	for id, endsAt := range want {
+		// 期限判定にも endsAtTolerance を効かせる。base はアプリが基準時刻を採った後に
+		// 採られるため、実際の ends_at は base+offset より最大 endsAtTolerance だけ手前に
+		// なりうる。ここをゼロ許容にすると、正しいアプリが初期化所要時間ぶんだけ早く
+		// closed にしたオークションに対して、まだ存在を要求してしまう。
+		if !endsAt.Add(-endsAtTolerance).After(now) {
+			continue // 期限到来済みかもしれない。欠けていてよい
+		}
+		stillLive++
+		if !gotIDs[id] {
+			return fmt.Errorf("%s: 期限前(%v)の auction %d が結果に含まれていない", label, endsAt, id)
+		}
+	}
+
+	if totalCount > int64(len(want)) {
+		return fmt.Errorf("%s: total_count が %d (期待: %d以下、期待集合の件数)", label, totalCount, len(want))
+	}
+	if totalCount < stillLive {
+		return fmt.Errorf("%s: total_count が %d (期待: %d以上、期限未到来の期待件数)", label, totalCount, stillLive)
+	}
+	return nil
+}
+
 // ValidateAuctionListWithSnapshot は生成データ搭載時の一覧検証。
+//
+// Prepare 専用。Load からは呼んではならない: 全ページ分の連結済み列を要求する
+// 時点で複数レスポンスにまたがる検査であり、しかも期待集合を初期データだけから
+// 組み立てる。Load 中は出品ワーカーが初期データに無いオークションを増やすため、
+// この関数が要求する「返ってきた id は全て期待集合に含まれる」は成立しない
+// (正しいアプリを false-FAIL させる)。Load から呼べる単一レスポンス内不変条件は
+// ValidatePagedListShape を使うこと。
 //
 // Phase 3 の ValidateInitialAuctionList は期待 id 列(initialAuctionOrder)との
 // 完全一致で照合していたが、生成データが入ると live は合計60件(シード10 +
@@ -113,26 +293,44 @@ func ValidateInitialAuctionList(list []AuctionSummary, base time.Time) error {
 // このチェックに引っかかる。id 昇順である/でないを別の性質として直接
 // 検査する必要はなく、むしろ id 相関の前提が崩れた場合に正しい一覧を誤検出
 // しかねないため、あえて入れていない。
-func ValidateAuctionListWithSnapshot(list []AuctionSummary, snap *Snapshot, base time.Time) error {
-	want := int64(len(expectedInitialAuctions)) + snap.Counts.LiveAuctions
-	if int64(len(list)) != want {
-		return fmt.Errorf("GET /auctions: 件数が %d (期待: %d = シード %d + 生成 %d)",
-			len(list), want, len(expectedInitialAuctions), snap.Counts.LiveAuctions)
+//
+// 加えて、全ページ走査で連結した列に対して集合としての照合も行う。これは
+// 絞り込み無し(probe 空・category 0)の期待集合を作って ValidateSearchResult に
+// 委ねる —— すなわち「返ってきた id は全て期待集合に含まれる」「期限未到来の
+// 期待要素は全て返ってきている」「total_count が期限未到来件数以上・期待集合の
+// 件数以下」の3点で、id のページ跨ぎ重複もここで検出される。
+//
+// 「全ページ合計 == 期待件数」「total_count == 全ページ合計」の厳密一致は
+// 意図的に課していない。走査の途中で先頭側のオークションの期限が到来して
+// closed になると、正しいアプリでも両方が破れるため(理由の詳細は
+// ValidateSearchResult のコメント参照)。
+//
+// now は全ページを取り終えた後の時刻を渡すこと。
+func ValidateAuctionListWithSnapshot(all []AuctionSummary, totalCount int64, snap *Snapshot, base, now time.Time) error {
+	want := expectedLiveMatches("", 0, snap, base)
+	// スナップショット自身の整合性チェック。counts.live_auctions と auctions 配列の
+	// live 件数が食い違うと期待集合が過小になり、正しいアプリを落としてしまう。
+	// これはアプリではなくベンチ側データの不具合なので、そうと分かる文言にする。
+	if wantCount := int64(len(expectedInitialAuctions)) + snap.Counts.LiveAuctions; int64(len(want)) != wantCount {
+		return fmt.Errorf("スナップショットが不整合: 期待集合が %d件だが counts から導くと %d件 "+
+			"(= シード %d + 生成 live %d)。auctions 配列に live が全て載っていない可能性がある",
+			len(want), wantCount, len(expectedInitialAuctions), snap.Counts.LiveAuctions)
+	}
+	if err := ValidateSearchResult("GET /auctions", all, totalCount, want, now); err != nil {
+		return err
 	}
 
 	// ends_at が非減少
-	for i := 1; i < len(list); i++ {
-		if list[i].EndsAt.Before(list[i-1].EndsAt) {
+	for i := 1; i < len(all); i++ {
+		if all[i].EndsAt.Before(all[i-1].EndsAt) {
 			return fmt.Errorf("GET /auctions: ends_at が昇順でない (index %d: id=%d %v の前が id=%d %v)",
-				i, list[i].ID, list[i].EndsAt, list[i-1].ID, list[i-1].EndsAt)
+				i, all[i].ID, all[i].EndsAt, all[i-1].ID, all[i-1].EndsAt)
 		}
 	}
 
 	// 各行の中身を、シードは既存の期待値表、生成分はスナップショットと照合する
-	for _, a := range list {
-		if a.Status != "live" {
-			return fmt.Errorf("auction %d: status が %q (期待: live)", a.ID, a.Status)
-		}
+	// (status が live であることは上の ValidateSearchResult が既に検査している)
+	for _, a := range all {
 		if a.ID <= seedMaxAuctionID {
 			w, ok := expectedInitialAuctions[a.ID]
 			if !ok {
@@ -207,7 +405,22 @@ func ValidateSnapshotAuctionDetail(d *AuctionDetail, sa *SnapshotAuction, base t
 		return fmt.Errorf("auction %d: title が %q (期待: %q)", d.ID, d.Title, sa.Title)
 	}
 	if d.Status != sa.Status {
-		return fmt.Errorf("auction %d: status が %q (期待: %q)", d.ID, d.Status, sa.Status)
+		// スナップショットが live としているオークションは、Prepare の実行中に
+		// 終了処理バッチが closed へ移しうる。live のオフセットはシャッフルされて
+		// いるため最短で数十秒に着地し、しかもサンプルされた live は Prepare の
+		// 最後に fetch される。期限が実際に到来しているなら closed を受理する。
+		// 逆向き(closed のはずが live)や、期限前の closed は従来どおり異常とする。
+		//
+		// 期限判定には endsAtTolerance を効かせる。base はベンチが initialize の
+		// 応答を受け取った後に採られるが、アプリが基準時刻を採ったのはその少し
+		// 前なので、実際の ends_at は常に base+offset 以前になる。ここをゼロ許容に
+		// すると、初期化所要時間ぶんだけ早く closed になった正しいアプリに対して
+		// まだ live であることを要求してしまう(ValidateSearchResult と同じ根拠)。
+		dueClosed := sa.Status == "live" && d.Status == "closed" &&
+			!base.Add(time.Duration(sa.EndsAtOffset)*time.Second).Add(-endsAtTolerance).After(time.Now().UTC())
+		if !dueClosed {
+			return fmt.Errorf("auction %d: status が %q (期待: %q)", d.ID, d.Status, sa.Status)
+		}
 	}
 	if d.CategoryID != sa.CategoryID {
 		return fmt.Errorf("auction %d: category_id が %d (期待: %d)", d.ID, d.CategoryID, sa.CategoryID)
