@@ -9,7 +9,6 @@ import (
 
 	"github.com/isucon/isucandar"
 	"github.com/isucon/isucandar/failure"
-	"github.com/isucon/isucandar/score"
 )
 
 func main() {
@@ -91,25 +90,31 @@ func main() {
 
 	fmt.Printf("SCORE: %d  (raw %d, penalty %d)\n", total, raw, penalty)
 	breakdown := result.Score.Breakdown()
-	for _, st := range []struct {
-		tag  score.ScoreTag
-		name string
-	}{
-		{ScoreGETList, "GET /auctions"},
-		{ScoreGETSearch, "GET /auctions (検索)"},
-		{ScoreGETDetail, "GET /auctions/:id"},
-		{ScorePOSTBid, "POST /auctions/:id/bids"},
-		{ScoreGETFeed, "GET /auctions/:id/bids"},
-		{ScoreGETNotifications, "GET /notifications"},
-		{ScorePOSTAuction, "POST /auctions"},
-	} {
-		count := breakdown[st.tag]
-		pt := count * scoreTable[st.tag]
-		fmt.Printf("  %-25s: %d回 (%d点)\n", st.name, count, pt)
+	for _, st := range scoredTags {
+		count := breakdown[st.Tag]
+		pt := count * scoreTable[st.Tag]
+		fmt.Printf("  %-25s: %d回 (%d点)\n", st.Name, count, pt)
 	}
 	fmt.Printf("ERRORS: %d件 (critical: %d件)\n", len(errs), criticalCount)
 
-	pass := criticalCount == 0 && appCount <= errorLimit && total > 0
+	// 採点対象が「ほぼ成功していない」走行を落とす。エラー上限が絶対件数である
+	// ため、10秒でタイムアウトする「遅い全滅」は数十件のエラーしか生まず、
+	// 採点対象が軒並み0回のまま PASS が出ていた(docs/phase4-notes.md 持ち越し2)。
+	floor := livenessFloor(*duration)
+	workers := workerCounts{
+		Bidders: *bidders, Watchers: *watchers, Notifiers: *notifiers, Sellers: *sellers,
+	}
+	dead := checkLiveness(breakdown, floor, workers)
+	if len(dead) == 0 {
+		fmt.Printf("LIVENESS: PASS (floor %d回、採点%d本すべて到達)\n", floor, len(scoredTags))
+	} else {
+		fmt.Printf("LIVENESS: FAIL (floor %d回)\n", floor)
+		for _, st := range dead {
+			fmt.Printf("  %-25s: %d回\n", st.Name, breakdown[st.Tag])
+		}
+	}
+
+	pass := criticalCount == 0 && appCount <= errorLimit && total > 0 && len(dead) == 0
 	if pass {
 		fmt.Println("RESULT: PASS")
 		return
