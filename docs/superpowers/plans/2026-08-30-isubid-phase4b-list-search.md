@@ -1437,7 +1437,7 @@ Expected: PASS
 			{"GET /auctions?q=" + probeDescriptionOnly + " (description専用プローブ)", probeDescriptionOnly, 0},
 			{"GET /auctions?q=" + probeNoMatch + " (該当なし)", probeNoMatch, 0},
 			{"GET /auctions?category=1", "", 1},
-			{"GET /auctions?q=" + probeTitleOnly + "&category=2 (AND結合)", probeTitleOnly, 2},
+			{"GET /auctions?q=" + probeTitleOnly + "&category=1 (AND結合)", probeTitleOnly, 1},
 		} {
 			got, totalCount, err := fetchAllAuctionPages(ctx, c,
 				AuctionListParams{Q: probe.q, Category: probe.categoryID})
@@ -1464,7 +1464,20 @@ Expected: PASS
 		}
 ```
 
-**注意:** `q=エルゴフロー&category=2` の期待集合が空になる可能性がある。空集合でも `ValidateSearchResult` は正しく動く(`total_count` が 0 であることを要求する)ので問題ない。ただし「常に空」だと AND/OR の区別がつかないので、**実際に走らせて期待集合が空でないことを確認する**こと。空だった場合は `category` を 1 や 3 に変え、期待集合が非空になる組み合わせを選ぶ。この確認結果をレポートに書くこと。
+**各プローブの期待件数(コミット済みスナップショット `small` から算出済み。実装後に実測して一致を確認すること):**
+
+| プローブ | 期待件数 | 内訳 |
+|---|---|---|
+| `q=エルゴフロー` | 5 | 生成 live のみ(シードに `エルゴフロー` を含む title/description は無い) |
+| `q=職人` | 実測して記録する | 生成 live の description のみ |
+| `q=ズンドコベロンチョ` | 0 | 該当なし |
+| `category=1` | 22 | 生成 live 18 + シード live 4(id 2,4,7,10) |
+| `q=エルゴフロー&category=1` | 3 | AND。OR なら 5 + 22 - 3 = 24 件になるので明確に区別できる |
+
+`q=エルゴフロー` の live 5件のカテゴリ内訳は {1: 3, 2: 1, 3: 1} である。AND結合プローブに
+`category=1` を選ぶのは、期待集合が 3件と十分に非空で、かつ OR 実装との差(3 対 24)が
+大きいため。**期待件数が上表と食い違った場合は、スナップショットが作り直されて
+中身が変わったことを意味するので、原因を突き止めるまで先へ進まないこと。**
 
 - [ ] **Step 7: 実機で Prepare を通す**
 
@@ -1554,7 +1567,7 @@ Expected: FAIL(`status が "closed" (期待: "live")`)
 	if d.Status != sa.Status {
 		// スナップショットが live としているオークションは、Prepare の実行中に
 		// 終了処理バッチが closed へ移しうる。live のオフセットはシャッフルされて
-		// いるため最短で 15秒(コミット済みスナップショットでは 21秒)に着地し、
+		// いるため最短で 15秒(コミット済みスナップショットの実測値)に着地し、
 		// しかもサンプルされた live は Prepare の最後に fetch される。
 		// 期限が実際に到来しているなら closed を受理する。逆向き
 		// (closed のはずが live)や、期限前の closed は従来どおり異常とする。
@@ -1619,10 +1632,15 @@ var scoreTable = map[score.ScoreTag]int64{
 
 - [ ] **Step 2: スコア内訳の出力に新タグを追加する**
 
-`bench/main.go` でスコアタグを列挙している箇所(`scoreTable` を回すか、タグの並びを直書きしている箇所)に `ScoreGETSearch` を追加する。**内訳の合計が `raw` と一致しなくなるとゲート3の目視確認が壊れるので、列挙漏れが無いことを必ず確認すること。**
+`bench/main.go:98-103` にスコアタグとラベルの並びが直書きされている。そこへ1行足す:
 
-Run: `cd bench && grep -n 'ScoreGET\|scoreTable' main.go`
-で列挙箇所を特定し、漏れなく足すこと。
+```go
+		{ScoreGETList, "GET /auctions"},
+		{ScoreGETSearch, "GET /auctions (検索)"},
+		{ScoreGETDetail, "GET /auctions/:id"},
+```
+
+**この列挙に漏れがあると内訳の合計が `raw` と一致しなくなり、ゲート3の目視確認が壊れる。** 追加後、内訳の合計が `raw` と一致することを実行して確認すること(`bench/main.go:60` の `for tag, mag := range scoreTable` が `raw` を計算しており、こちらは `scoreTable` を回すので自動的に新タグを含む)。
 
 - [ ] **Step 3: bidderIteration を page=1 に変更する**
 
