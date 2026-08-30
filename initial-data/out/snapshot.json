@@ -54,6 +54,7 @@
     {
       "id": 13,
       "title": "ヘリテージ・ラウンジ 00013",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 3,
       "seller_id": 422,
       "seller_name": "gen_user_00422",
@@ -68,6 +69,7 @@
     {
       "id": 46,
       "title": "スカンジ・ダイニング 00046",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 2,
       "seller_id": 312,
       "seller_name": "gen_user_00312",
@@ -82,6 +84,7 @@
     {
       "id": 79,
       "title": "メッシュワークス 00079",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 2,
       "seller_id": 106,
       "seller_name": "gen_user_00106",
@@ -96,6 +99,7 @@
     {
       "id": 112,
       "title": "スタンドアップ 00112",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 2,
       "seller_id": 325,
       "seller_name": "gen_user_00325",
@@ -110,6 +114,7 @@
     {
       "id": 145,
       "title": "スタンドアップ 00145",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 1,
       "seller_id": 462,
       "seller_name": "gen_user_00462",
@@ -124,6 +129,7 @@
     {
       "id": 178,
       "title": "スカンジ・ダイニング 00178",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 3,
       "seller_id": 383,
       "seller_name": "gen_user_00383",
@@ -138,6 +144,7 @@
     {
       "id": 211,
       "title": "エルゴフロー 00211",
+      "description": "職人による手作業の仕上げ",
       "category_id": 1,
       "seller_id": 320,
       "seller_name": "gen_user_00320",
@@ -152,6 +159,7 @@
     {
       "id": 244,
       "title": "コンパクトシート 00244",
+      "description": "職人による手作業の仕上げ",
       "category_id": 3,
       "seller_id": 280,
       "seller_name": "gen_user_00280",
@@ -166,6 +174,7 @@
     {
       "id": 277,
       "title": "ゲーミングエッジ 00277",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 1,
       "seller_id": 285,
       "seller_name": "gen_user_00285",
@@ -180,6 +189,7 @@
     {
       "id": 310,
       "title": "ゲーミングエッジ 00310",
+      "description": "通気性に優れた背面メッシュ",
       "category_id": 2,
       "seller_id": 39,
       "seller_name": "gen_user_00039",
@@ -194,6 +204,7 @@
     {
       "id": 343,
       "title": "スカンジ・ダイニング 00343",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 3,
       "seller_id": 424,
       "seller_name": "gen_user_00424",
@@ -208,6 +219,7 @@
     {
       "id": 376,
       "title": "ゲーミングエッジ 00376",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 1,
       "seller_id": 375,
       "seller_name": "gen_user_00375",
@@ -222,6 +234,7 @@
     {
       "id": 409,
       "title": "ISUクラシック 00409",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 1,
       "seller_id": 427,
       "seller_name": "gen_user_00427",
@@ -236,6 +249,7 @@
     {
       "id": 442,
       "title": "コンパクトシート 00442",
+      "description": "程よい硬さの座面",
       "category_id": 3,
       "seller_id": 505,
       "seller_name": "gen_user_00505",
@@ -250,6 +264,7 @@
     {
       "id": 475,
       "title": "エルゴフロー 00475",
+      "description": "程よい硬さの座面",
       "category_id": 3,
       "seller_id": 48,
       "seller_name": "gen_user_00048",
@@ -264,6 +279,7 @@
     {
       "id": 508,
       "title": "ゲーミングエッジ 00508",
+      "description": "程よい硬さの座面",
       "category_id": 2,
       "seller_id": 386,
       "seller_name": "gen_user_00386",
@@ -278,6 +294,7 @@
     {
       "id": 541,
       "title": "アンティーク・ウィング 00541",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 2,
       "seller_id": 489,
       "seller_name": "gen_user_00489",
@@ -292,6 +309,7 @@
     {
       "id": 574,
       "title": "ヘリテージ・ラウンジ 00574",
+      "description": "程よい硬さの座面",
       "category_id": 2,
       "seller_id": 253,
       "seller_name": "gen_user_00253",
@@ -306,6 +324,7 @@
     {
       "id": 607,
       "title": "スカンジ・ダイニング 00607",
+      "description": "職人による手作業の仕上げ",
       "category_id": 1,
       "seller_id": 485,
       "seller_name": "gen_user_00485",
@@ -320,6 +339,7 @@
     {
       "id": 640,
       "title": "ベルベット・オットマン 00640",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 3,
       "seller_id": 376,
       "seller_name": "gen_user_00376",
@@ -334,6 +354,7 @@
     {
       "id": 673,
       "title": "エルゴフロー 00673",
+      "description": "通気性に優れた背面メッシュ",
       "category_id": 3,
       "seller_id": 176,
       "seller_name": "gen_user_00176",
@@ -348,6 +369,7 @@
     {
       "id": 706,
       "title": "コンパクトシート 00706",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 1,
       "seller_id": 493,
       "seller_name": "gen_user_00493",
@@ -362,6 +384,7 @@
     {
       "id": 739,
       "title": "エルゴフロー 00739",
+      "description": "通気性に優れた背面メッシュ",
       "category_id": 2,
       "seller_id": 42,
       "seller_name": "gen_user_00042",
@@ -376,6 +399,7 @@
     {
       "id": 772,
       "title": "ベルベット・オットマン 00772",
+      "description": "程よい硬さの座面",
       "category_id": 1,
       "seller_id": 354,
       "seller_name": "gen_user_00354",
@@ -390,6 +414,7 @@
     {
       "id": 805,
       "title": "ISUクラシック 00805",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 3,
       "seller_id": 253,
       "seller_name": "gen_user_00253",
@@ -404,6 +429,7 @@
     {
       "id": 838,
       "title": "ベルベット・オットマン 00838",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 1,
       "seller_id": 425,
       "seller_name": "gen_user_00425",
@@ -418,6 +444,7 @@
     {
       "id": 871,
       "title": "スカンジ・ダイニング 00871",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 2,
       "seller_id": 341,
       "seller_name": "gen_user_00341",
@@ -432,6 +459,7 @@
     {
       "id": 904,
       "title": "アンティーク・ウィング 00904",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 2,
       "seller_id": 347,
       "seller_name": "gen_user_00347",
@@ -446,6 +474,7 @@
     {
       "id": 937,
       "title": "ISUクラシック 00937",
+      "description": "程よい硬さの座面",
       "category_id": 2,
       "seller_id": 313,
       "seller_name": "gen_user_00313",
@@ -460,6 +489,7 @@
     {
       "id": 970,
       "title": "コンパクトシート 00970",
+      "description": "職人による手作業の仕上げ",
       "category_id": 2,
       "seller_id": 171,
       "seller_name": "gen_user_00171",
@@ -474,6 +504,7 @@
     {
       "id": 1013,
       "title": "スカンジ・ダイニング 01013",
+      "description": "程よい硬さの座面",
       "category_id": 1,
       "seller_id": 465,
       "seller_name": "gen_user_00465",
@@ -488,6 +519,7 @@
     {
       "id": 1014,
       "title": "ゲーミングエッジ 01014",
+      "description": "程よい硬さの座面",
       "category_id": 3,
       "seller_id": 220,
       "seller_name": "gen_user_00220",
@@ -502,6 +534,7 @@
     {
       "id": 1015,
       "title": "ISUクラシック 01015",
+      "description": "職人による手作業の仕上げ",
       "category_id": 1,
       "seller_id": 197,
       "seller_name": "gen_user_00197",
@@ -516,6 +549,7 @@
     {
       "id": 1016,
       "title": "スカンジ・ダイニング 01016",
+      "description": "程よい硬さの座面",
       "category_id": 1,
       "seller_id": 38,
       "seller_name": "gen_user_00038",
@@ -530,6 +564,7 @@
     {
       "id": 1017,
       "title": "スカンジ・ダイニング 01017",
+      "description": "程よい硬さの座面",
       "category_id": 3,
       "seller_id": 368,
       "seller_name": "gen_user_00368",
@@ -544,6 +579,7 @@
     {
       "id": 1018,
       "title": "メッシュワークス 01018",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 1,
       "seller_id": 511,
       "seller_name": "gen_user_00511",
@@ -558,6 +594,7 @@
     {
       "id": 1019,
       "title": "ヘリテージ・ラウンジ 01019",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 3,
       "seller_id": 210,
       "seller_name": "gen_user_00210",
@@ -572,6 +609,7 @@
     {
       "id": 1020,
       "title": "スタンドアップ 01020",
+      "description": "職人による手作業の仕上げ",
       "category_id": 3,
       "seller_id": 424,
       "seller_name": "gen_user_00424",
@@ -586,6 +624,7 @@
     {
       "id": 1021,
       "title": "ゲーミングエッジ 01021",
+      "description": "通気性に優れた背面メッシュ",
       "category_id": 1,
       "seller_id": 121,
       "seller_name": "gen_user_00121",
@@ -600,6 +639,7 @@
     {
       "id": 1022,
       "title": "コンパクトシート 01022",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 3,
       "seller_id": 216,
       "seller_name": "gen_user_00216",
@@ -614,6 +654,7 @@
     {
       "id": 1023,
       "title": "ISUクラシック 01023",
+      "description": "職人による手作業の仕上げ",
       "category_id": 3,
       "seller_id": 511,
       "seller_name": "gen_user_00511",
@@ -628,6 +669,7 @@
     {
       "id": 1024,
       "title": "エルゴフロー 01024",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 2,
       "seller_id": 267,
       "seller_name": "gen_user_00267",
@@ -642,6 +684,7 @@
     {
       "id": 1025,
       "title": "ISUクラシック 01025",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 2,
       "seller_id": 401,
       "seller_name": "gen_user_00401",
@@ -656,6 +699,7 @@
     {
       "id": 1026,
       "title": "アンティーク・ウィング 01026",
+      "description": "通気性に優れた背面メッシュ",
       "category_id": 2,
       "seller_id": 313,
       "seller_name": "gen_user_00313",
@@ -670,6 +714,7 @@
     {
       "id": 1027,
       "title": "アンティーク・ウィング 01027",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 1,
       "seller_id": 67,
       "seller_name": "gen_user_00067",
@@ -684,6 +729,7 @@
     {
       "id": 1028,
       "title": "メッシュワークス 01028",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 2,
       "seller_id": 148,
       "seller_name": "gen_user_00148",
@@ -698,6 +744,7 @@
     {
       "id": 1029,
       "title": "エルゴフロー 01029",
+      "description": "職人による手作業の仕上げ",
       "category_id": 3,
       "seller_id": 133,
       "seller_name": "gen_user_00133",
@@ -712,6 +759,7 @@
     {
       "id": 1030,
       "title": "スカンジ・ダイニング 01030",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 1,
       "seller_id": 69,
       "seller_name": "gen_user_00069",
@@ -726,6 +774,7 @@
     {
       "id": 1031,
       "title": "ゲーミングエッジ 01031",
+      "description": "程よい硬さの座面",
       "category_id": 1,
       "seller_id": 137,
       "seller_name": "gen_user_00137",
@@ -740,6 +789,7 @@
     {
       "id": 1032,
       "title": "スカンジ・ダイニング 01032",
+      "description": "職人による手作業の仕上げ",
       "category_id": 1,
       "seller_id": 399,
       "seller_name": "gen_user_00399",
@@ -754,6 +804,7 @@
     {
       "id": 1033,
       "title": "ベルベット・オットマン 01033",
+      "description": "程よい硬さの座面",
       "category_id": 1,
       "seller_id": 397,
       "seller_name": "gen_user_00397",
@@ -768,6 +819,7 @@
     {
       "id": 1034,
       "title": "ISUクラシック 01034",
+      "description": "通気性に優れた背面メッシュ",
       "category_id": 3,
       "seller_id": 70,
       "seller_name": "gen_user_00070",
@@ -782,6 +834,7 @@
     {
       "id": 1035,
       "title": "スタンドアップ 01035",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 1,
       "seller_id": 437,
       "seller_name": "gen_user_00437",
@@ -796,6 +849,7 @@
     {
       "id": 1036,
       "title": "ベルベット・オットマン 01036",
+      "description": "職人による手作業の仕上げ",
       "category_id": 3,
       "seller_id": 128,
       "seller_name": "gen_user_00128",
@@ -810,6 +864,7 @@
     {
       "id": 1037,
       "title": "ベルベット・オットマン 01037",
+      "description": "通気性に優れた背面メッシュ",
       "category_id": 1,
       "seller_id": 420,
       "seller_name": "gen_user_00420",
@@ -824,6 +879,7 @@
     {
       "id": 1038,
       "title": "アンティーク・ウィング 01038",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 1,
       "seller_id": 316,
       "seller_name": "gen_user_00316",
@@ -838,6 +894,7 @@
     {
       "id": 1039,
       "title": "エルゴフロー 01039",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 1,
       "seller_id": 488,
       "seller_name": "gen_user_00488",
@@ -852,6 +909,7 @@
     {
       "id": 1040,
       "title": "ゲーミングエッジ 01040",
+      "description": "程よい硬さの座面",
       "category_id": 2,
       "seller_id": 249,
       "seller_name": "gen_user_00249",
@@ -866,6 +924,7 @@
     {
       "id": 1041,
       "title": "ベルベット・オットマン 01041",
+      "description": "通気性に優れた背面メッシュ",
       "category_id": 3,
       "seller_id": 304,
       "seller_name": "gen_user_00304",
@@ -880,6 +939,7 @@
     {
       "id": 1042,
       "title": "ヘリテージ・ラウンジ 01042",
+      "description": "職人による手作業の仕上げ",
       "category_id": 2,
       "seller_id": 432,
       "seller_name": "gen_user_00432",
@@ -894,6 +954,7 @@
     {
       "id": 1043,
       "title": "ISUクラシック 01043",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 2,
       "seller_id": 429,
       "seller_name": "gen_user_00429",
@@ -908,6 +969,7 @@
     {
       "id": 1044,
       "title": "アンティーク・ウィング 01044",
+      "description": "程よい硬さの座面",
       "category_id": 3,
       "seller_id": 115,
       "seller_name": "gen_user_00115",
@@ -922,6 +984,7 @@
     {
       "id": 1045,
       "title": "メッシュワークス 01045",
+      "description": "程よい硬さの座面",
       "category_id": 3,
       "seller_id": 204,
       "seller_name": "gen_user_00204",
@@ -936,6 +999,7 @@
     {
       "id": 1046,
       "title": "エルゴフロー 01046",
+      "description": "職人による手作業の仕上げ",
       "category_id": 1,
       "seller_id": 440,
       "seller_name": "gen_user_00440",
@@ -950,6 +1014,7 @@
     {
       "id": 1047,
       "title": "スタンドアップ 01047",
+      "description": "通気性に優れた背面メッシュ",
       "category_id": 3,
       "seller_id": 292,
       "seller_name": "gen_user_00292",
@@ -964,6 +1029,7 @@
     {
       "id": 1048,
       "title": "コンパクトシート 01048",
+      "description": "通気性に優れた背面メッシュ",
       "category_id": 2,
       "seller_id": 448,
       "seller_name": "gen_user_00448",
@@ -978,6 +1044,7 @@
     {
       "id": 1049,
       "title": "ヘリテージ・ラウンジ 01049",
+      "description": "程よい硬さの座面",
       "category_id": 2,
       "seller_id": 312,
       "seller_name": "gen_user_00312",
@@ -992,6 +1059,7 @@
     {
       "id": 1050,
       "title": "エルゴフロー 01050",
+      "description": "程よい硬さの座面",
       "category_id": 1,
       "seller_id": 341,
       "seller_name": "gen_user_00341",
@@ -1006,6 +1074,7 @@
     {
       "id": 1051,
       "title": "ヘリテージ・ラウンジ 01051",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 2,
       "seller_id": 361,
       "seller_name": "gen_user_00361",
@@ -1020,6 +1089,7 @@
     {
       "id": 1052,
       "title": "ヘリテージ・ラウンジ 01052",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 1,
       "seller_id": 379,
       "seller_name": "gen_user_00379",
@@ -1034,6 +1104,7 @@
     {
       "id": 1053,
       "title": "メッシュワークス 01053",
+      "description": "職人による手作業の仕上げ",
       "category_id": 3,
       "seller_id": 120,
       "seller_name": "gen_user_00120",
@@ -1048,6 +1119,7 @@
     {
       "id": 1054,
       "title": "スカンジ・ダイニング 01054",
+      "description": "職人による手作業の仕上げ",
       "category_id": 2,
       "seller_id": 72,
       "seller_name": "gen_user_00072",
@@ -1062,6 +1134,7 @@
     {
       "id": 1055,
       "title": "メッシュワークス 01055",
+      "description": "職人による手作業の仕上げ",
       "category_id": 2,
       "seller_id": 169,
       "seller_name": "gen_user_00169",
@@ -1076,6 +1149,7 @@
     {
       "id": 1056,
       "title": "ヘリテージ・ラウンジ 01056",
+      "description": "通気性に優れた背面メッシュ",
       "category_id": 2,
       "seller_id": 32,
       "seller_name": "gen_user_00032",
@@ -1090,6 +1164,7 @@
     {
       "id": 1057,
       "title": "ISUクラシック 01057",
+      "description": "通気性に優れた背面メッシュ",
       "category_id": 2,
       "seller_id": 36,
       "seller_name": "gen_user_00036",
@@ -1104,6 +1179,7 @@
     {
       "id": 1058,
       "title": "ベルベット・オットマン 01058",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 3,
       "seller_id": 68,
       "seller_name": "gen_user_00068",
@@ -1118,6 +1194,7 @@
     {
       "id": 1059,
       "title": "ISUクラシック 01059",
+      "description": "程よい硬さの座面",
       "category_id": 3,
       "seller_id": 70,
       "seller_name": "gen_user_00070",
@@ -1132,6 +1209,7 @@
     {
       "id": 1060,
       "title": "コンパクトシート 01060",
+      "description": "職人による手作業の仕上げ",
       "category_id": 2,
       "seller_id": 51,
       "seller_name": "gen_user_00051",
@@ -1146,6 +1224,7 @@
     {
       "id": 1061,
       "title": "ゲーミングエッジ 01061",
+      "description": "職人による手作業の仕上げ",
       "category_id": 1,
       "seller_id": 22,
       "seller_name": "gen_user_00022",
@@ -1160,6 +1239,7 @@
     {
       "id": 1062,
       "title": "スタンドアップ 01062",
+      "description": "通気性に優れた背面メッシュ",
       "category_id": 3,
       "seller_id": 487,
       "seller_name": "gen_user_00487",
@@ -1174,6 +1254,7 @@
     {
       "id": 1063,
       "title": "エルゴフロー 01063",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 2,
       "seller_id": 332,
       "seller_name": "gen_user_00332",
@@ -1188,6 +1269,7 @@
     {
       "id": 1064,
       "title": "スタンドアップ 01064",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 1,
       "seller_id": 513,
       "seller_name": "gen_user_00513",
@@ -1202,6 +1284,7 @@
     {
       "id": 1065,
       "title": "ゲーミングエッジ 01065",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 1,
       "seller_id": 456,
       "seller_name": "gen_user_00456",
@@ -1216,6 +1299,7 @@
     {
       "id": 1066,
       "title": "ISUクラシック 01066",
+      "description": "通気性に優れた背面メッシュ",
       "category_id": 2,
       "seller_id": 200,
       "seller_name": "gen_user_00200",
@@ -1230,6 +1314,7 @@
     {
       "id": 1067,
       "title": "スタンドアップ 01067",
+      "description": "程よい硬さの座面",
       "category_id": 3,
       "seller_id": 368,
       "seller_name": "gen_user_00368",
@@ -1244,6 +1329,7 @@
     {
       "id": 1068,
       "title": "スカンジ・ダイニング 01068",
+      "description": "通気性に優れた背面メッシュ",
       "category_id": 1,
       "seller_id": 454,
       "seller_name": "gen_user_00454",
@@ -1258,6 +1344,7 @@
     {
       "id": 1069,
       "title": "ヘリテージ・ラウンジ 01069",
+      "description": "程よい硬さの座面",
       "category_id": 3,
       "seller_id": 159,
       "seller_name": "gen_user_00159",
@@ -1272,6 +1359,7 @@
     {
       "id": 1070,
       "title": "エルゴフロー 01070",
+      "description": "程よい硬さの座面",
       "category_id": 1,
       "seller_id": 164,
       "seller_name": "gen_user_00164",
@@ -1286,6 +1374,7 @@
     {
       "id": 1071,
       "title": "コンパクトシート 01071",
+      "description": "職人による手作業の仕上げ",
       "category_id": 2,
       "seller_id": 420,
       "seller_name": "gen_user_00420",
@@ -1300,6 +1389,7 @@
     {
       "id": 1072,
       "title": "メッシュワークス 01072",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 1,
       "seller_id": 300,
       "seller_name": "gen_user_00300",
@@ -1314,6 +1404,7 @@
     {
       "id": 1073,
       "title": "スタンドアップ 01073",
+      "description": "通気性に優れた背面メッシュ",
       "category_id": 1,
       "seller_id": 456,
       "seller_name": "gen_user_00456",
@@ -1328,6 +1419,7 @@
     {
       "id": 1074,
       "title": "ヘリテージ・ラウンジ 01074",
+      "description": "職人による手作業の仕上げ",
       "category_id": 2,
       "seller_id": 327,
       "seller_name": "gen_user_00327",
@@ -1342,6 +1434,7 @@
     {
       "id": 1075,
       "title": "メッシュワークス 01075",
+      "description": "程よい硬さの座面",
       "category_id": 2,
       "seller_id": 29,
       "seller_name": "gen_user_00029",
@@ -1356,6 +1449,7 @@
     {
       "id": 1076,
       "title": "スカンジ・ダイニング 01076",
+      "description": "折りたたみ可能な省スペース設計",
       "category_id": 3,
       "seller_id": 376,
       "seller_name": "gen_user_00376",
@@ -1370,6 +1464,7 @@
     {
       "id": 1077,
       "title": "スカンジ・ダイニング 01077",
+      "description": "通気性に優れた背面メッシュ",
       "category_id": 1,
       "seller_id": 322,
       "seller_name": "gen_user_00322",
@@ -1384,6 +1479,7 @@
     {
       "id": 1078,
       "title": "エルゴフロー 01078",
+      "description": "程よい硬さの座面",
       "category_id": 1,
       "seller_id": 376,
       "seller_name": "gen_user_00376",
@@ -1398,6 +1494,7 @@
     {
       "id": 1079,
       "title": "ヘリテージ・ラウンジ 01079",
+      "description": "程よい硬さの座面",
       "category_id": 1,
       "seller_id": 175,
       "seller_name": "gen_user_00175",
@@ -1412,6 +1509,7 @@
     {
       "id": 1080,
       "title": "コンパクトシート 01080",
+      "description": "職人による手作業の仕上げ",
       "category_id": 2,
       "seller_id": 305,
       "seller_name": "gen_user_00305",
@@ -1426,6 +1524,7 @@
     {
       "id": 1081,
       "title": "ゲーミングエッジ 01081",
+      "description": "職人による手作業の仕上げ",
       "category_id": 2,
       "seller_id": 306,
       "seller_name": "gen_user_00306",
@@ -1440,6 +1539,7 @@
     {
       "id": 1082,
       "title": "ベルベット・オットマン 01082",
+      "description": "程よい硬さの座面",
       "category_id": 2,
       "seller_id": 156,
       "seller_name": "gen_user_00156",
@@ -1454,6 +1554,7 @@
     {
       "id": 1083,
       "title": "メッシュワークス 01083",
+      "description": "程よい硬さの座面",
       "category_id": 1,
       "seller_id": 300,
       "seller_name": "gen_user_00300",
@@ -1468,6 +1569,7 @@
     {
       "id": 1084,
       "title": "ヘリテージ・ラウンジ 01084",
+      "description": "長時間の作業に向いた一脚",
       "category_id": 1,
       "seller_id": 402,
       "seller_name": "gen_user_00402",
@@ -1482,6 +1584,7 @@
     {
       "id": 1085,
       "title": "ベルベット・オットマン 01085",
+      "description": "程よい硬さの座面",
       "category_id": 1,
       "seller_id": 219,
       "seller_name": "gen_user_00219",
@@ -1496,6 +1599,7 @@
     {
       "id": 1086,
       "title": "ヘリテージ・ラウンジ 01086",
+      "description": "職人による手作業の仕上げ",
       "category_id": 3,
       "seller_id": 56,
       "seller_name": "gen_user_00056",
@@ -1510,6 +1614,7 @@
     {
       "id": 1087,
       "title": "ゲーミングエッジ 01087",
+      "description": "職人による手作業の仕上げ",
       "category_id": 1,
       "seller_id": 312,
       "seller_name": "gen_user_00312",

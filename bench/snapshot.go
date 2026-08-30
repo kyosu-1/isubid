@@ -19,6 +19,7 @@ type SnapshotCounts struct {
 type SnapshotAuction struct {
 	ID            int64  `json:"id"`
 	Title         string `json:"title"`
+	Description   string `json:"description"`
 	CategoryID    int64  `json:"category_id"`
 	SellerID      int64  `json:"seller_id"`
 	SellerName    string `json:"seller_name"`

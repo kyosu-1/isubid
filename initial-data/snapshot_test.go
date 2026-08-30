@@ -83,6 +83,25 @@ func TestSnapshotMatchesGeneratedBids(t *testing.T) {
 	}
 }
 
+func TestSnapshotCarriesDescription(t *testing.T) {
+	ds := Generate(Scales["small"])
+	snap := BuildSnapshot(ds)
+
+	descByID := map[int64]string{}
+	for _, a := range ds.Auctions {
+		descByID[a.ID] = a.Description
+	}
+	for _, sa := range snap.Auctions {
+		want := descByID[sa.ID]
+		if want == "" {
+			t.Fatalf("auction %d: 生成データ側の description が空", sa.ID)
+		}
+		if sa.Description != want {
+			t.Errorf("auction %d: snapshot の description が %q (期待: %q)", sa.ID, sa.Description, want)
+		}
+	}
+}
+
 // live/upcoming は generatedEpoch からのオフセットを持ち、closed は 0。
 func TestSnapshotEndsAtOffsets(t *testing.T) {
 	cfg := Scales["small"]
