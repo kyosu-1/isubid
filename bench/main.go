@@ -96,6 +96,7 @@ func main() {
 		name string
 	}{
 		{ScoreGETList, "GET /auctions"},
+		{ScoreGETSearch, "GET /auctions (検索)"},
 		{ScoreGETDetail, "GET /auctions/:id"},
 		{ScorePOSTBid, "POST /auctions/:id/bids"},
 		{ScoreGETFeed, "GET /auctions/:id/bids"},

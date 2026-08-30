@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -95,13 +96,20 @@ func (s *Scenario) bidderIteration(ctx context.Context, step *isucandar.Benchmar
 		addErr(ctx, step, ErrApplication, err)
 		return
 	}
-	l, err := c.GetAuctions(ctx, AuctionListParams{})
+	// 入札対象は「終了が最も近い20件」= 1ページ目から選ぶ。実サイトの挙動である
+	// と同時に、live 件数が増えても入札が分散しないようにする狙いがある
+	// (docs/phase4-notes.md 持ち越し1/9: 分散すると FOR UPDATE 検出器が発火しない)。
+	l, err := c.GetAuctions(ctx, AuctionListParams{Page: 1})
 	if err != nil {
 		addErr(ctx, step, ErrApplication, err)
 		return
 	}
-	list := l.Auctions
 	step.AddScore(ScoreGETList)
+	if err := ValidatePagedListShape(1, l); err != nil {
+		addErr(ctx, step, ErrCritical, err)
+		return
+	}
+	list := l.Auctions
 	if len(list) == 0 {
 		addErr(ctx, step, ErrCritical, fmt.Errorf("GET /auctions: 開催中オークションが0件"))
 		return
@@ -173,24 +181,51 @@ func (s *Scenario) bidderIteration(ctx context.Context, step *isucandar.Benchmar
 	// 5連敗は人気オークションなら起こりうる。エラーにしない。
 }
 
-// watcherIteration は「一覧→ランダム詳細+不変条件チェック」の回遊。
+// watcherIteration は「一覧(ページ回遊・検索あり)→ランダム詳細+不変条件チェック」の回遊。
 func (s *Scenario) watcherIteration(ctx context.Context, step *isucandar.BenchmarkStep) {
 	c, err := NewClient(s.Target)
 	if err != nil {
 		addErr(ctx, step, ErrApplication, err)
 		return
 	}
-	l, err := c.GetAuctions(ctx, AuctionListParams{})
+	page := 1 + rand.Intn(3)
+	p := AuctionListParams{Page: page}
+	tag := ScoreGETList
+	// 1/3 の確率で絞り込みを付ける。q は title 専用プローブに限る ——
+	// 一覧レスポンスに description が無いため、description で一致した行を
+	// 走行中に検証する術がなく、正しい実装を誤判定してしまう。
+	switch rand.Intn(3) {
+	case 0:
+		p.Q = probeTitleOnly
+		tag = ScoreGETSearch
+	case 1:
+		p.Category = int64(1 + rand.Intn(3))
+		tag = ScoreGETSearch
+	}
+	l, err := c.GetAuctions(ctx, p)
 	if err != nil {
 		addErr(ctx, step, ErrApplication, err)
 		return
 	}
+	step.AddScore(tag)
+	if err := ValidatePagedListShape(page, l); err != nil {
+		addErr(ctx, step, ErrCritical, err)
+		return
+	}
 	list := l.Auctions
-	step.AddScore(ScoreGETList)
+	// 絞り込み結果は述語に合致していなければならない。これは一方向の検査である:
+	// 「期待集合にあるのに返ってこない」のは走行中なら正常(closed になった、
+	// 別ページへ移った)だが、「述語に合致しない行が返る」のは常に異常。
+	// 「返さなすぎ」は静穏期の Prepare が見る。
 	for _, a := range list {
-		if a.Status != "live" {
+		if p.Q != "" && !strings.Contains(a.Title, p.Q) {
 			addErr(ctx, step, ErrCritical,
-				fmt.Errorf("GET /auctions: live以外が混入 (id=%d status=%q)", a.ID, a.Status))
+				fmt.Errorf("GET /auctions?q=%s: title が一致しない行が返った (id=%d title=%q)", p.Q, a.ID, a.Title))
+			return
+		}
+		if p.Category != 0 && a.CategoryID != p.Category {
+			addErr(ctx, step, ErrCritical,
+				fmt.Errorf("GET /auctions?category=%d: category_id=%d の行が返った (id=%d)", p.Category, a.CategoryID, a.ID))
 			return
 		}
 	}
