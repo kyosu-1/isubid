@@ -482,6 +482,58 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 			}
 		}
 
+		// アイコン。スナップショットからアイコンあり3人・なし2人をサンプルする。
+		var withIcon, withoutIcon []int64
+		for i := range s.Snapshot.Users {
+			u := &s.Snapshot.Users[i]
+			if u.IconSHA256 != "" {
+				if len(withIcon) < 3 {
+					withIcon = append(withIcon, u.ID)
+				}
+			} else if len(withoutIcon) < 2 {
+				withoutIcon = append(withoutIcon, u.ID)
+			}
+			if len(withIcon) == 3 && len(withoutIcon) == 2 {
+				break
+			}
+		}
+		if len(withIcon) == 0 || len(withoutIcon) == 0 {
+			return fmt.Errorf("スナップショットが不整合: アイコンあり %d人 / なし %d人 (どちらも1人以上必要)",
+				len(withIcon), len(withoutIcon))
+		}
+		for _, id := range append(append([]int64{}, withIcon...), withoutIcon...) {
+			su, _ := s.Snapshot.UserByID(id)
+			code, ct, body, err := c.GetUserIcon(ctx, id)
+			if err != nil {
+				return err
+			}
+			if statusErr, contentErr := ValidateUserIcon(id, code, ct, body, su); statusErr != nil {
+				return statusErr
+			} else if contentErr != nil {
+				return contentErr
+			}
+		}
+		// シードユーザー(アイコン未設定)と存在しないユーザーは 404
+		for _, id := range []int64{1, 999999} {
+			code, ct, body, err := c.GetUserIcon(ctx, id)
+			if err != nil {
+				return err
+			}
+			if statusErr, contentErr := ValidateUserIcon(id, code, ct, body, nil); statusErr != nil {
+				return statusErr
+			} else if contentErr != nil {
+				return contentErr
+			}
+		}
+		// 非数値の id は 400
+		code, _, _, err := c.doRaw(ctx, "/users/notanumber/icon")
+		if err != nil {
+			return err
+		}
+		if code != 400 {
+			return fmt.Errorf("GET /users/notanumber/icon: status %d (期待: 400)", code)
+		}
+
 		// 検索とカテゴリ絞り込み
 		//
 		// AND結合プローブに category=2 を選ぶ理由: probeTitleOnly に一致する live の

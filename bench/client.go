@@ -83,6 +83,31 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any) (int
 	return c.doJSONWith(ctx, c.ag, method, path, body)
 }
 
+// doRaw は生のGETを送り、ステータス・Content-Type・本文を返す。
+// 画像のようにJSONでない応答を扱うために使う。
+func (c *Client) doRaw(ctx context.Context, path string) (int, string, []byte, error) {
+	req, err := c.ag.NewRequest(http.MethodGet, path, nil)
+	if err != nil {
+		return 0, "", nil, err
+	}
+	res, err := c.ag.Do(ctx, req)
+	if err != nil {
+		return 0, "", nil, err
+	}
+	defer res.Body.Close()
+	b, err := io.ReadAll(res.Body)
+	if err != nil {
+		return 0, "", nil, err
+	}
+	return res.StatusCode, res.Header.Get("Content-Type"), b, nil
+}
+
+// GetUserIcon はアイコンを取得し、ステータス・Content-Type・本文を返す。
+// 404 はアイコン未設定・ユーザー不在の正常な応答なので、エラーにはしない。
+func (c *Client) GetUserIcon(ctx context.Context, id int64) (int, string, []byte, error) {
+	return c.doRaw(ctx, fmt.Sprintf("/users/%d/icon", id))
+}
+
 func (c *Client) Initialize(ctx context.Context) (string, error) {
 	code, b, err := c.doJSONWith(ctx, c.initAg, http.MethodPost, "/initialize", map[string]string{})
 	if err != nil {

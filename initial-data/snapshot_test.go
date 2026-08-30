@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"crypto/sha256"
+	"fmt"
+	"testing"
+)
 
 // スナップショットは全オークションを載せない。Prepare が照合するのは
 // 一覧1ページ目・代表サンプル・総件数の3つだけなので、
@@ -120,5 +124,47 @@ func TestSnapshotEndsAtOffsets(t *testing.T) {
 				t.Errorf("%s auction %d の ends_at_offset = %d, want 正の値", sa.Status, sa.ID, sa.EndsAtOffset)
 			}
 		}
+	}
+}
+
+// TestSnapshotCarriesUserIcons は生成ユーザーのアイコン sha256 が
+// スナップショットに載ることを固定する。
+func TestSnapshotCarriesUserIcons(t *testing.T) {
+	cfg := Scales["small"]
+	cfg.Seed = DefaultSeed
+	ds := Generate(cfg)
+	snap := BuildSnapshot(ds)
+
+	if len(snap.Users) != len(ds.Users) {
+		t.Fatalf("snapshot.Users が %d件, want %d件", len(snap.Users), len(ds.Users))
+	}
+	byID := map[int64]SnapshotUser{}
+	for _, su := range snap.Users {
+		byID[su.ID] = su
+	}
+	withIcon, without := 0, 0
+	for _, u := range ds.Users {
+		su, ok := byID[u.ID]
+		if !ok {
+			t.Fatalf("user %d が snapshot に無い", u.ID)
+		}
+		if su.Name != u.Name {
+			t.Errorf("user %d: name が %q (期待: %q)", u.ID, su.Name, u.Name)
+		}
+		if u.Icon == nil {
+			without++
+			if su.IconSHA256 != "" {
+				t.Errorf("user %d: アイコン未設定なのに icon_sha256 が %q", u.ID, su.IconSHA256)
+			}
+			continue
+		}
+		withIcon++
+		want := fmt.Sprintf("%x", sha256.Sum256(u.Icon))
+		if su.IconSHA256 != want {
+			t.Errorf("user %d: icon_sha256 が %q (期待: %q)", u.ID, su.IconSHA256, want)
+		}
+	}
+	if withIcon == 0 || without == 0 {
+		t.Errorf("アイコンあり %d件 / なし %d件 — どちらも1件以上あること", withIcon, without)
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"sort"
 	"testing"
 	"time"
@@ -41,7 +42,8 @@ func TestGenerateIsDeterministic(t *testing.T) {
 		t.Fatalf("users 件数が不一致: %d vs %d", len(a.Users), len(b.Users))
 	}
 	for i := range a.Users {
-		if a.Users[i] != b.Users[i] {
+		// User は Icon([]byte) を持つため比較不能(==不可)。フィールドごとに比較する。
+		if a.Users[i].ID != b.Users[i].ID || a.Users[i].Name != b.Users[i].Name || !bytes.Equal(a.Users[i].Icon, b.Users[i].Icon) {
 			t.Fatalf("users[%d] が不一致: %+v vs %+v", i, a.Users[i], b.Users[i])
 		}
 	}
@@ -422,4 +424,69 @@ func TestGeneratedNotificationMessagesFitColumn(t *testing.T) {
 			t.Fatalf("notification %d の message が空", n.ID)
 		}
 	}
+}
+
+// TestGeneratedUsersHaveIcons はアイコンの付与規則を固定する。
+func TestGeneratedUsersHaveIcons(t *testing.T) {
+	cfg := Scales["small"]
+	cfg.Seed = DefaultSeed
+	ds := Generate(cfg)
+
+	withIcon, without := 0, 0
+	for _, u := range ds.Users {
+		if u.Icon == nil {
+			without++
+			continue
+		}
+		withIcon++
+		if len(u.Icon) == 0 {
+			t.Errorf("user %d: Icon が空スライス(未設定は nil で表すこと)", u.ID)
+		}
+	}
+	if withIcon+without != cfg.Users {
+		t.Fatalf("合計が %d, want %d", withIcon+without, cfg.Users)
+	}
+	// 約1割が未設定。生成数が500なので 25〜75件のレンジに入っていれば妥当とみなす。
+	if without < 25 || without > 75 {
+		t.Errorf("アイコン未設定が %d件 (期待: 25〜75件、約1割)", without)
+	}
+}
+
+// TestIconAssignmentIsDeterministic は、どのユーザーが未設定になるかが
+// seed から決まることを固定する。
+func TestIconAssignmentIsDeterministic(t *testing.T) {
+	cfg := Scales["small"]
+	cfg.Seed = DefaultSeed
+	a := Generate(cfg)
+	b := Generate(cfg)
+	for i := range a.Users {
+		if (a.Users[i].Icon == nil) != (b.Users[i].Icon == nil) {
+			t.Fatalf("user %d: アイコンの有無が2回の生成で異なる", a.Users[i].ID)
+		}
+		if !bytes.Equal(a.Users[i].Icon, b.Users[i].Icon) {
+			t.Fatalf("user %d: アイコンのバイト列が2回の生成で異なる", a.Users[i].ID)
+		}
+	}
+}
+
+// TestIconRNGDoesNotDisturbMainStream は、アイコン用の乱数がメインの乱数列を
+// 乱していないことを固定する。
+//
+// generateUsers が共有 rng を消費すると auctions / bids / notifications が
+// すべて別物になり、コミット済みダンプの全ファイルが変わってしまう。
+// アイコンは独立した乱数源から引かなければならない。
+func TestIconRNGDoesNotDisturbMainStream(t *testing.T) {
+	cfg := Scales["small"]
+	cfg.Seed = DefaultSeed
+	ds := Generate(cfg)
+
+	// 生成物の指紋。この値は「アイコン導入前と同じ」であることに意味がある。
+	// 値そのものは Task 2 の実装後に一度実行して埋めること(実測値を使う)。
+	if len(ds.Auctions) == 0 || len(ds.Bids) == 0 {
+		t.Fatal("生成データが空")
+	}
+	first, last := ds.Auctions[0], ds.Auctions[len(ds.Auctions)-1]
+	t.Logf("auctions[0]: id=%d seller=%d title=%q", first.ID, first.SellerID, first.Title)
+	t.Logf("auctions[last]: id=%d seller=%d title=%q", last.ID, last.SellerID, last.Title)
+	t.Logf("bids: %d件, notifications: %d件", len(ds.Bids), len(ds.Notifications))
 }

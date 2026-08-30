@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -1249,5 +1251,70 @@ func TestExpectedLiveMatches(t *testing.T) {
 	}
 	if len(cat1) != 5 {
 		t.Errorf("category=1 の期待集合が %d件 (期待: 5件)", len(cat1))
+	}
+}
+
+func TestValidateUserIcon(t *testing.T) {
+	png := []byte{0x89, 0x50, 0x4E, 0x47, 1, 2, 3}
+	sum := fmt.Sprintf("%x", sha256.Sum256(png))
+	withIcon := &SnapshotUser{ID: 100, Name: "gen_user_00100", IconSHA256: sum}
+	without := &SnapshotUser{ID: 101, Name: "gen_user_00101"}
+
+	// 正常系: アイコンあり
+	if statusErr, contentErr := ValidateUserIcon(100, 200, "image/png", png, withIcon); statusErr != nil || contentErr != nil {
+		t.Errorf("正常なアイコンが拒否された: statusErr=%v contentErr=%v", statusErr, contentErr)
+	}
+	// 正常系: アイコン未設定は 404
+	if statusErr, contentErr := ValidateUserIcon(101, 404, "", nil, without); statusErr != nil || contentErr != nil {
+		t.Errorf("アイコン未設定の404が拒否された: statusErr=%v contentErr=%v", statusErr, contentErr)
+	}
+	// 正常系: スナップショットに無いユーザー(ベンチが走行中に作った新規ユーザー等)は 404
+	if statusErr, contentErr := ValidateUserIcon(99999, 404, "", nil, nil); statusErr != nil || contentErr != nil {
+		t.Errorf("未知ユーザーの404が拒否された: statusErr=%v contentErr=%v", statusErr, contentErr)
+	}
+
+	// 異常系。wantStatusErr は「ステータス起因(呼び出し側で ErrApplication に
+	// マップすべき)」か「内容不一致(呼び出し側で ErrCritical に
+	// マップすべき)」かを示す。一過性の5xx等でありうるステータス起因のエラーを
+	// 即FAILにすると、コネクションプール枯渇のようなありがちな失敗経由で
+	// 走行全体が即死する不公平が起きるため、この分類を固定する。
+	for _, tt := range []struct {
+		name          string
+		id            int64
+		code          int
+		contentType   string
+		body          []byte
+		su            *SnapshotUser
+		wantStatusErr bool
+	}{
+		{"アイコンありなのに404", 100, 404, "", nil, withIcon, true},
+		{"別人のアイコンが返る", 100, 200, "image/png", []byte("other"), withIcon, false},
+		{"バイト列が途中で切れている", 100, 200, "image/png", png[:3], withIcon, false},
+		{"Content-Type が image/png でない", 100, 200, "application/octet-stream", png, withIcon, false},
+		{"アイコン未設定なのに200", 101, 200, "image/png", png, without, true},
+		{"未知ユーザーなのに200", 99999, 200, "image/png", png, nil, true},
+		{"予期しないステータス", 100, 500, "", nil, withIcon, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			statusErr, contentErr := ValidateUserIcon(tt.id, tt.code, tt.contentType, tt.body, tt.su)
+			if statusErr == nil && contentErr == nil {
+				t.Fatal("検出されない")
+			}
+			if tt.wantStatusErr {
+				if statusErr == nil {
+					t.Errorf("ステータス起因のはずが statusErr == nil (contentErr=%v)", contentErr)
+				}
+				if contentErr != nil {
+					t.Errorf("ステータス起因のはずが contentErr にもエラーが入っている: %v", contentErr)
+				}
+			} else {
+				if contentErr == nil {
+					t.Errorf("内容不一致のはずが contentErr == nil (statusErr=%v)", statusErr)
+				}
+				if statusErr != nil {
+					t.Errorf("内容不一致のはずが statusErr にもエラーが入っている: %v", statusErr)
+				}
+			}
+		})
 	}
 }
