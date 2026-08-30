@@ -243,6 +243,46 @@ func (s *Scenario) watcherIteration(ctx context.Context, step *isucandar.Benchma
 	if len(list) == 0 {
 		return
 	}
+	// ブラウザと同じように、一覧に出た出品者のアイコンを取得する。
+	// ベンチはイテレーションごとに新しいクライアントを作る(= 毎回キャッシュが空の
+	// 新規訪問者)ので、アイコンは必ず再取得される。これが「リクエストのたびに
+	// LONGBLOB を DB から読む」仕込みを持続的な負荷にしている。
+	//
+	// アイコンには採点タグを作らない。アイコンはコストであって報酬ではなく、
+	// 速く返せるようになった見返りは「1周が速くなって一覧と詳細の回数が増える」
+	// という形で既存の採点に現れる。
+	seenSeller := make(map[int64]bool, len(list))
+	for _, a := range list {
+		if seenSeller[a.Seller.ID] {
+			continue
+		}
+		seenSeller[a.Seller.ID] = true
+		code, ct, body, err := c.GetUserIcon(ctx, a.Seller.ID)
+		if err != nil {
+			addErr(ctx, step, ErrApplication, err)
+			return
+		}
+		if s.Snapshot == nil {
+			// 生成データ非搭載モード。全ユーザーがアイコンを持たず正解値も無いので、
+			// 取得して負荷はかけるが照合はしない。
+			continue
+		}
+		su, _ := s.Snapshot.UserByID(a.Seller.ID)
+		// ステータス起因(一過性の5xx等でありうる)と内容不一致(実装の誤り)を
+		// 区別する。前者を即FAILにすると、コネクションプール枯渇のような
+		// ありがちな失敗が(1周あたり最大20回呼ばれる)アイコン経路経由で
+		// 走行全体を即死させてしまい、他の採点タグ(500でもエラー予算100件の
+		// 減点で済む)に比べて著しく不公平になる。
+		statusErr, contentErr := ValidateUserIcon(a.Seller.ID, code, ct, body, su)
+		if statusErr != nil {
+			addErr(ctx, step, ErrApplication, statusErr)
+			return
+		}
+		if contentErr != nil {
+			addErr(ctx, step, ErrCritical, contentErr)
+			return
+		}
+	}
 	d, err := c.GetAuction(ctx, list[rand.Intn(len(list))].ID)
 	if err != nil {
 		addErr(ctx, step, ErrApplication, err)
