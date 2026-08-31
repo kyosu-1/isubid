@@ -2,7 +2,12 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Link, Route, Routes } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth'
+import { AuctionDetail } from './pages/AuctionDetail'
+import { AuctionList } from './pages/AuctionList'
 import { Login } from './pages/Login'
+import { Notifications } from './pages/Notifications'
+import { Sell } from './pages/Sell'
+import { Stats } from './pages/Stats'
 import './styles.css'
 
 function Header() {
@@ -30,7 +35,13 @@ function App() {
         <Header />
         <main className="main">
           <Routes>
+            <Route path="/" element={<AuctionList />} />
+            <Route path="/auctions/:id" element={<AuctionDetail />} />
+            <Route path="/sell" element={<Sell />} />
+            <Route path="/notifications" element={<Notifications />} />
+            <Route path="/stats" element={<Stats />} />
             <Route path="/login" element={<Login />} />
+            <Route path="*" element={<p className="muted">ページが見つかりません。</p>} />
           </Routes>
         </main>
       </AuthProvider>

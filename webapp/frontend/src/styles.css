@@ -49,3 +49,4 @@ button:disabled { opacity: 0.5; cursor: default; }
 .tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
 .tabs button { background: #fff; color: var(--fg); border: 1px solid var(--line); }
 .tabs button[aria-selected='true'] { background: var(--accent); color: #fff; }
+.icon { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; background: var(--line); }

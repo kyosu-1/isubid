@@ -62,6 +62,16 @@ export type AuctionCreated = {
   status: string
 }
 
+// POST /api/auctions/:id/bids の応答(webapp/go/bids.go の bidCreated)。
+// {id} だけでなく auction_id / user_id / amount / created_at も含む。
+export type BidCreated = {
+  id: number
+  auction_id: number
+  user_id: number
+  amount: number
+  created_at: string
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message)
@@ -127,7 +137,7 @@ export const api = {
   bidsSince: (id: number, since: number) =>
     call<{ bids: Bid[] }>(`/auctions/${id}/bids?since=${since}`).then((r) => r.bids),
   bid: (id: number, amount: number) =>
-    call<{ id: number }>(`/auctions/${id}/bids`, {
+    call<BidCreated>(`/auctions/${id}/bids`, {
       method: 'POST',
       body: JSON.stringify({ amount }),
     }),
