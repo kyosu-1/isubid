@@ -15,6 +15,13 @@ export function AuctionDetail() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   // ポーリングのカーソル。詳細は created_at DESC, id DESC なので先頭が最大 id。
+  //
+  // ただし「bids[0].id が真の最大id」であること自体は、created_at が id の昇順と
+  // 一致している(＝データ生成器が id 順に created_at を発行している)という
+  // 未保証の前提に依存しており、サーバーの ORDER BY が保証しているわけではない。
+  // この前提が崩れる(生成器が created_at を id 順と無関係に発行する)と、
+  // bidsSince が既知の入札を返し続ける形で下記の重複除去を素通りし、指摘1と
+  // 同種の重複が再発しうる。挙動は変更しない(コメントのみの追記)。
   const since = useRef(0)
 
   const load = useCallback(async () => {
@@ -36,8 +43,24 @@ export function AuctionDetail() {
         .then((fresh) => {
           if (fresh.length === 0) return
           // フィードは id 昇順で返る。表示は新しい順なので反転して先頭に積む。
-          since.current = fresh[fresh.length - 1].id
-          setBids((prev) => [...fresh.slice().reverse(), ...prev])
+          //
+          // このリクエストは入札フォームの POST(→load())と並行に飛ぶことがある。
+          // load() が bids を丸ごと差し替えた後に、それより前に発行されていた
+          // このポーリングが遅れて解決すると、load() が既に入れた入札をもう一度
+          // 先頭に積んでしまい、入札履歴が重複し React の key も衝突する
+          // (postBid は行ロックで直列化される意図的に遅い実装のため、負荷下では
+          // 現実に起こりうる)。setBids の関数形引数で受け取る prev は解決時点の
+          // 最新state なので、それに対して id で重複除去してから積む。
+          setBids((prev) => {
+            const knownIDs = new Set(prev.map((b) => b.id))
+            const newOnes = fresh.filter((b) => !knownIDs.has(b.id))
+            if (newOnes.length === 0) return prev
+            return [...newOnes.slice().reverse(), ...prev]
+          })
+          // since は「サーバー側で既知の最大id」を表すカーソル。重複除去で
+          // 積む入札が0件になった場合でも、フィードが返した最大idまでは
+          // 前進させる(戻さない)ことで次回以降の再取得範囲を縮める。
+          since.current = Math.max(since.current, fresh[fresh.length - 1].id)
         })
         .catch(() => {
           /* ポーリングの失敗は画面を壊さない */

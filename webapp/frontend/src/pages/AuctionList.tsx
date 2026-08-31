@@ -14,9 +14,14 @@ function remaining(endsAt: string): string {
 
 // parsePage は ?page= を1以上の整数に正規化する。
 // 不正値でサーバーに400を撃たせないよう、画面側で1へ丸める。
+// Number.isInteger は "1e300" のような指数表記の数値も整数と判定してしまう
+// (指数表記でも小数部を持たないため)。そのため Number() へ渡す前に、文字列として
+// 「先頭が0でない10進の数字列」であることを検査する。Number.isSafeInteger は
+// 有効桁を超える(精度が失われる)巨大な数値をさらに弾く。
 function parsePage(raw: string | null): number {
+  if (raw === null || !/^[1-9]\d*$/.test(raw)) return 1
   const n = Number(raw)
-  return Number.isInteger(n) && n >= 1 ? n : 1
+  return Number.isSafeInteger(n) ? n : 1
 }
 
 export function AuctionList() {
@@ -38,7 +43,7 @@ export function AuctionList() {
     api
       .auctions({ page, q: q || undefined, category: category ? Number(category) : undefined })
       .then(setList)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e) => setError((e instanceof Error ? e.message : String(e)) || '不明なエラーが発生しました'))
       .finally(() => setLoading(false))
   }, [page, q, category])
 
@@ -63,7 +68,11 @@ export function AuctionList() {
 
   const items = list?.auctions ?? []
   const total = list?.total_count ?? 0
-  const first = total === 0 ? 0 : (page - 1) * AUCTIONS_PER_PAGE + 1
+  // items が0件なのに total > 0 なのは、総件数を超えたページ番号への直接アクセス
+  // (例: 全30件しか無いのに ?page=4 を直打ち)。このとき従来は
+  // (page-1)*20+1 が (page-1)*20+0 を上回り「61〜60件」のような意味の無い範囲
+  // 表示になっていたため、items.length === 0 を別枠で扱う。
+  const first = items.length === 0 ? 0 : (page - 1) * AUCTIONS_PER_PAGE + 1
   const last = (page - 1) * AUCTIONS_PER_PAGE + items.length
 
   return (
@@ -85,7 +94,11 @@ export function AuctionList() {
       {loading && <p className="muted">読み込み中…</p>}
       {!loading && !error && (
         <p className="muted">
-          {total === 0 ? '該当するオークションはありません。' : `全${total.toLocaleString()}件中 ${first}〜${last}件`}
+          {total === 0
+            ? '該当するオークションはありません。'
+            : items.length === 0
+              ? 'このページには結果がありません。'
+              : `全${total.toLocaleString()}件中 ${first}〜${last}件`}
         </p>
       )}
 

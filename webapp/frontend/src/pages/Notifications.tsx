@@ -4,7 +4,7 @@ import { api, type Notification } from '../api'
 import { useAuth } from '../auth'
 
 export function Notifications() {
-  const { user } = useAuth()
+  const { user, loading: authLoading } = useAuth()
   const [items, setItems] = useState<Notification[]>([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
@@ -16,10 +16,14 @@ export function Notifications() {
     api
       .notifications()
       .then(setItems)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e) => setError((e instanceof Error ? e.message : String(e)) || '不明なエラーが発生しました'))
       .finally(() => setLoading(false))
   }, [user])
 
+  // useAuth().loading の間は身元がまだ確定していない。ここを見ずに !user だけで
+  // 判定すると、ログイン済みでもハードリロード直後は GET /api/me の往復が終わるまでの間
+  // 一瞬「ログインしてください。」が出てしまう。
+  if (authLoading) return <p className="muted">読み込み中…</p>
   if (!user) return <p className="muted">ログインしてください。</p>
   if (loading) return <p className="muted">読み込み中…</p>
   if (error) return <p className="error">{error}</p>

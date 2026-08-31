@@ -7,7 +7,7 @@ import { useAuth } from '../auth'
 const DEFAULT_DURATION_SECONDS = 60
 
 export function Sell() {
-  const { user } = useAuth()
+  const { user, loading: authLoading } = useAuth()
   const navigate = useNavigate()
 
   const [title, setTitle] = useState('')
@@ -39,6 +39,10 @@ export function Sell() {
     }
   }
 
+  // useAuth().loading の間は身元がまだ確定していない。ここを見ずに !user だけで
+  // 判定すると、ログイン済みでもハードリロード直後は GET /api/me の往復が終わるまでの間
+  // 一瞬「ログインしてください。」が出てしまう。
+  if (authLoading) return <p className="muted">読み込み中…</p>
   if (!user) return <p className="muted">ログインしてください。</p>
 
   return (
