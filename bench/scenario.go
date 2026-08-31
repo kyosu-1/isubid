@@ -26,6 +26,7 @@ type Scenario struct {
 	Watchers    int
 	Notifiers   int
 	Sellers     int
+	Visitors    int
 	Listings    *pubsub.PubSub
 	Board       *listingBoard
 	Ledger      *Ledger
@@ -50,12 +51,16 @@ func randomName(prefix string) string {
 }
 
 // Load は入札者(bidderIteration)・ウォッチャー(watcherIteration)・
-// 通知閲覧者(notifierIteration)・出品者(sellerIteration)の4種の worker を
+// 通知閲覧者(notifierIteration)・出品者(sellerIteration)・
+// 訪問者(visitorIteration)の5種の worker を
 // 無限ループで並行実行し、ctx(WithLoadTimeout)がキャンセルされるまで走らせる。
 // (isucandarのLoadは削除するとParallel実行系の前提が崩れるため、no-opでも定義必須)
 func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) error {
 	if s.PrepareOnly {
 		return nil
+	}
+	if s.Assets == nil {
+		return fmt.Errorf("Load: アセットマニフェストが未ロード(Prepare が先に走っていない)")
 	}
 	// 購読は worker 起動前に張る。ハンドラはスライス追記だけで即座に返るため
 	// Publish 側がブロックしない。Capacity にも十分な余裕を持たせておく。
@@ -89,6 +94,12 @@ func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) erro
 	if err != nil {
 		return err
 	}
+	visitor, err := worker.NewWorker(func(ctx context.Context, _ int) {
+		s.visitorIteration(ctx, step)
+	}, worker.WithInfinityLoop(), worker.WithMaxParallelism(int32(s.Visitors)))
+	if err != nil {
+		return err
+	}
 	// ワーカー数が0以下なら Process を呼ばない。
 	//
 	// これを省くと `-sellers 0` が「出品ワーカーを止める」ではなく「無制限並列で
@@ -118,6 +129,7 @@ func (s *Scenario) Load(ctx context.Context, step *isucandar.BenchmarkStep) erro
 	start(s.Watchers, watcher)
 	start(s.Notifiers, notifier)
 	start(s.Sellers, seller)
+	start(s.Visitors, visitor)
 	wg.Wait()
 	return nil
 }

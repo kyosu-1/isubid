@@ -444,3 +444,63 @@ func (s *Scenario) sellerIteration(ctx context.Context, step *isucandar.Benchmar
 				stats.ListedCount, stats.LiveCount))
 	}
 }
+
+// visitorIteration は「サイトを訪れた閲覧者」を1人ぶん演じる。
+// ページロード(HTML と全アセットの取得・照合)を1回行い、そのあとログインせずに
+// 一覧と詳細を1つずつ見る。
+//
+// ログインしないのは意図的である。GET /api/auctions は未ログインでも見られるので、
+// この worker が bcrypt(コスト12)を毎回踏むと、測っているものが静的配信ではなく
+// ログイン処理になってしまう。
+//
+// イテレーションごとに新しい Client を作る = 毎回キャッシュが空の新規訪問者である。
+// 参加者がキャッシュヘッダを付けても初回訪問は必ず実配信になるので、
+// 静的配信の負荷が走行から消えることはない。
+func (s *Scenario) visitorIteration(ctx context.Context, step *isucandar.BenchmarkStep) {
+	c, err := NewClient(s.Target)
+	if err != nil {
+		addErr(ctx, step, ErrApplication, err)
+		return
+	}
+	pl, err := c.GetPage(ctx)
+	if err != nil {
+		addErr(ctx, step, ErrApplication, err)
+		return
+	}
+	// VerifyAssets の失敗は ErrApplication として扱う(brief からの意図的な変更。
+	// task-8-report.md 参照)。dev/nginx.conf は "/" を含む全パスを app へ proxy
+	// しており、静的アセットの配信も app プロセスと運命を共にする。過負荷時の
+	// 一過性の5xxが index.html や JS/CSS に出ても不思議はなく、これを
+	// ErrCritical にすると一過性の1発が走行全体を即死させる(規約上の事故2と
+	// 同型)。ScoreGETPage には liveness floor が課されている(bench/liveness.go)ため、
+	// 恒常的に壊れたビルドはこの1箇所を甘くしても「ページロードが1回も
+	// floorに届かない」形で LIVENESS: FAIL が別途捕まえる。
+	if err := VerifyAssets(s.Assets, pl); err != nil {
+		addErr(ctx, step, ErrApplication, err)
+		return
+	}
+	// ページロード1回につき1点。アセット1本ごとには加点しない(score.go のコメント参照)。
+	step.AddScore(ScoreGETPage)
+
+	// 入札者と同じく「終了が最も近い20件」= 1ページ目を見る。
+	l, err := c.GetAuctions(ctx, AuctionListParams{Page: 1})
+	if err != nil {
+		addErr(ctx, step, ErrApplication, err)
+		return
+	}
+	step.AddScore(ScoreGETList)
+	if err := ValidatePagedListShape(1, l); err != nil {
+		addErr(ctx, step, ErrCritical, err)
+		return
+	}
+	list := l.Auctions
+	if len(list) == 0 {
+		addErr(ctx, step, ErrCritical, fmt.Errorf("GET /api/auctions: 開催中オークションが0件"))
+		return
+	}
+	if _, err := c.GetAuction(ctx, list[rand.Intn(len(list))].ID); err != nil {
+		addErr(ctx, step, ErrApplication, err)
+		return
+	}
+	step.AddScore(ScoreGETDetail)
+}
