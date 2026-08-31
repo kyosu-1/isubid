@@ -23,6 +23,12 @@ services:
       ISUBID_SQL_DIR: /webapp/sql
       ISUBID_INITIAL_DATA_DIR: /initial-data
       ISUBID_PUBLIC_DIR: /webapp/public
+      # 開発用の固定値。未設定でも起動はするが(webapp/go/session.go参照)、
+      # その場合は起動のたびに鍵が変わりコンテナ再起動でセッションが切れる。
+      # ここで固定しておくことで `docker compose up` の再起動をまたいでも
+      # ログイン状態が保たれる。本番/コンテスト環境では、この値を使い回さず
+      # 環境ごとに固有の値を設定すること(MYSQL_ROOT_PASSWORD等と同様、開発用の既定値)。
+      ISUBID_SESSION_SECRET: "302ac48b45808fdd26df094d8501b7b86b907ec74f3fa46f6370e5388b4c2dcc"
     volumes:
       - ../webapp/sql:/webapp/sql:ro
       - ../initial-data/out:/initial-data:ro
