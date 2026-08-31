@@ -39,6 +39,25 @@ func sessionSecret() []byte {
 
 var store = sessions.NewCookieStore(sessionSecret())
 
+func init() {
+	// gorilla/sessions v1.4.0 の NewCookieStore は既定で Secure: true / SameSite: None を
+	// 設定する(store.go 参照)。このアプリはコンテスト環境でHTTPのまま動く前提のため、
+	// Secure: true のままだと Go 標準の net/http/cookiejar が localhost 以外への
+	// HTTPリクエストで Secure Cookie を送らなくなり、ベンチのセッション認証が全滅する。
+	// そのため Secure は明示的に false のままにする。
+	//
+	// HttpOnly は gorilla/sessions の Options 構造体では明示されておらず、
+	// ゼロ値(false)のままだった(v1.4.0 の options.go を確認)。4-D で SPA が入り
+	// XSSがあった場合の増幅面が現実味を帯びたため、明示的に true にする。
+	store.Options = &sessions.Options{
+		Path:     "/",
+		MaxAge:   86400 * 30, // 既定(NewCookieStoreの初期値)を維持
+		HttpOnly: true,
+		Secure:   false,
+		SameSite: http.SameSiteLaxMode,
+	}
+}
+
 func setLogin(w http.ResponseWriter, r *http.Request, userID int64) error {
 	sess, _ := store.Get(r, sessionName)
 	sess.Values["user_id"] = userID
