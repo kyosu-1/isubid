@@ -2787,8 +2787,12 @@ func (s *Scenario) visitorIteration(ctx context.Context, step *isucandar.Benchma
 		addErr(ctx, step, ErrApplication, err)
 		return
 	}
+	// 注意: ここは ErrApplication であって ErrCritical ではない。
+	// 静的配信はアプリプロセスと運命を共にするため、一過性の5xxで走行を即死
+	// させてはいけない(設計文書のエラー分類の項を参照)。恒常的に壊れたビルドは
+	// Prepare 側の VerifyAssets / liveness floor / エラー予算の三重で捕まる。
 	if err := VerifyAssets(s.Assets, pl); err != nil {
-		addErr(ctx, step, ErrCritical, err)
+		addErr(ctx, step, ErrApplication, err)
 		return
 	}
 	// ページロード1回につき1点。アセット1本ごとには加点しない(score.go のコメント参照)。

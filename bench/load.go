@@ -467,8 +467,9 @@ func (s *Scenario) visitorIteration(ctx context.Context, step *isucandar.Benchma
 		addErr(ctx, step, ErrApplication, err)
 		return
 	}
-	// VerifyAssets の失敗は ErrApplication として扱う(brief からの意図的な変更。
-	// task-8-report.md 参照)。dev/nginx.conf は "/" を含む全パスを app へ proxy
+	// VerifyAssets の失敗は ErrApplication として扱う(当初設計の ErrCritical からの
+	// 意図的な変更。docs/phase4-notes.md の 4-D 節を参照)。
+	// dev/nginx.conf は "/" を含む全パスを app へ proxy
 	// しており、静的アセットの配信も app プロセスと運命を共にする。過負荷時の
 	// 一過性の5xxが index.html や JS/CSS に出ても不思議はなく、これを
 	// ErrCritical にすると一過性の1発が走行全体を即死させる(規約上の事故2と

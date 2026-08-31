@@ -310,7 +310,7 @@ nginx の既定 mime 表とアプリの自前表で正当に食い違う値が�
 実際にページが壊れる。マニフェストの `content_type` は文書としての記録であって
 照合基準ではない。
 
-いずれかが破れたら `ErrCritical` で即 FAIL。
+いずれかが破れたら FAIL。**ただし Load 中の分類は `ErrApplication` である**(エラー分類の項を参照)。
 
 **304 と gzip を許容できる根拠は実物で確認済みである。** isucandar の `agent.Do` は
 `newCache` の中で 304 応答の `res.Body` をキャッシュ済みボディに差し戻す
@@ -337,7 +337,23 @@ Agent は自前の `CacheStore` を持つため、参加者がキャッシュヘ
 
 エラー分類:
 - アセット取得の 5xx / 接続エラー → `ErrApplication`(減点)
-- ハッシュ不一致 / 参照の欠落 → `ErrCritical`(Load 中でも FAIL)
+- ハッシュ不一致 / 参照の欠落 → **Load 中は `ErrApplication`**(減点)
+
+**当初この設計は「ハッシュ不一致は `ErrCritical`」と書いていたが、それは誤りだった。**
+`dev/nginx.conf` は `/` を含む全パスをアプリへ proxy しており、静的アセットの配信は
+アプリプロセスと運命を共にする。過負荷時の一過性の5xxが index.html や JS/CSS に出るのは
+不思議ではなく、これを `ErrCritical` にすると**一過性の1発が走行全体を即死させる**。
+4-C で「アイコンの5xxを `ErrCritical` にして一過性の500が走行を即死させた」事故と同型である。
+
+**恒常的に壊れたビルドは、それでも三重に捕まる。**最も強い層は Load より前にある:
+
+1. `Scenario.Prepare` が同じ `VerifyAssets` を呼ぶ。isucandar は Prepare エラーで
+   Load を1度も走らせずに終了するため全スコアが0になり、決定的に FAIL する。
+   **Load 側の分類に一切依存しない**
+2. `ScoreGETPage` の liveness floor(1回も成功しなければ未到達で FAIL)
+3. エラー予算(60秒で約770回のページロードに対し上限100件)
+
+**この分類を `ErrCritical` へ「戻す」修正を入れてはいけない。**上記の事故が復活する。
 
 ## 9. テスト
 
