@@ -40,7 +40,7 @@ func (h *handler) getAuctionBids(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 
@@ -53,7 +53,7 @@ func (h *handler) getAuctionBids(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.SelectContext(r.Context(), &rows,
 		"SELECT id, user_id, amount, created_at FROM bids WHERE auction_id = ? AND id > ? ORDER BY id ASC",
 		id, since); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	bids := make([]bidResponse, 0, len(rows))
@@ -62,7 +62,7 @@ func (h *handler) getAuctionBids(w http.ResponseWriter, r *http.Request) {
 		// 意図的に遅い実装(N+1): 入札ごとにユーザーを引く
 		if err := h.db.GetContext(r.Context(), &u,
 			"SELECT id, name FROM users WHERE id = ?", b.UserID); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, r, err)
 			return
 		}
 		bids = append(bids, bidResponse{ID: b.ID, User: u, Amount: b.Amount, CreatedAt: b.CreatedAt})

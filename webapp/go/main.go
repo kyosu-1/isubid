@@ -71,3 +71,13 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
+
+// writeInternalError は500応答を返す。
+//
+// err にはSQL文やドライバのメッセージなど内部の詳細が含まれうるため、クライアントへは
+// 一般化したメッセージだけを返し、詳細はサーバーログにのみ出す。参加者はログでデバッグ
+// できる一方、応答本文からテーブル名やクエリ内容などの内部情報が漏れないようにする。
+func writeInternalError(w http.ResponseWriter, r *http.Request, err error) {
+	log.Printf("%s %s: internal error: %v", r.Method, r.URL.Path, err)
+	writeError(w, http.StatusInternalServerError, "internal server error")
+}

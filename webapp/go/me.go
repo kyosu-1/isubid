@@ -33,7 +33,7 @@ func (h *handler) getMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, userResponse{ID: u.ID, Name: u.Name})

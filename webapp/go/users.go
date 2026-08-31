@@ -30,7 +30,7 @@ func (h *handler) getUserIcon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	if len(icon) == 0 {

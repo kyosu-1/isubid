@@ -20,27 +20,27 @@ func (h *handler) getStatsMe(w http.ResponseWriter, r *http.Request) {
 	var listed int64
 	if err := h.db.GetContext(ctx, &listed,
 		"SELECT COUNT(*) FROM auctions WHERE seller_id = ?", userID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	var sold int64
 	if err := h.db.GetContext(ctx, &sold,
 		"SELECT COUNT(*) FROM auctions WHERE seller_id = ? AND status = 'closed' AND winner_id IS NOT NULL",
 		userID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	var total sql.NullInt64
 	if err := h.db.GetContext(ctx, &total,
 		"SELECT SUM(winning_price) FROM auctions WHERE seller_id = ? AND status = 'closed' AND winner_id IS NOT NULL",
 		userID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	var live int64
 	if err := h.db.GetContext(ctx, &live,
 		"SELECT COUNT(*) FROM auctions WHERE seller_id = ? AND status = 'live'", userID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 
