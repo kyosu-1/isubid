@@ -68,10 +68,15 @@ func TestServeStaticAsset(t *testing.T) {
 
 // 意図的に遅い実装であることの固定: キャッシュ関連ヘッダを付けない。
 // これが付き始めたら仕込みが失われている(参加者の環境ではなく参照実装の話)。
+//
+// Accept-Ranges も見ている: http.ServeContent(..., time.Time{}, ...) のように
+// modtime をゼロ値で渡すと Last-Modified は出ないが、Range 対応を示す
+// Accept-Ranges: bytes は modtime に関係なく必ず付く。Last-Modified だけを
+// 見ているとこの退行を素通りさせてしまう。
 func TestServeStaticHasNoCacheHeaders(t *testing.T) {
 	newStaticFixture(t)
 	rec := getStatic(t, "/assets/app.js")
-	for _, k := range []string{"Cache-Control", "ETag", "Last-Modified", "Content-Encoding"} {
+	for _, k := range []string{"Cache-Control", "ETag", "Last-Modified", "Content-Encoding", "Accept-Ranges"} {
 		if v := rec.Header().Get(k); v != "" {
 			t.Errorf("%s = %q, want 空(意図的に遅い実装)", k, v)
 		}
@@ -93,9 +98,16 @@ func TestServeStaticSPAFallback(t *testing.T) {
 }
 
 // 存在しないアセットに index.html を返すと「壊れているのに壊れて見えない」状態になる。
+//
+// /assets/logo は拡張子を持たない。規則3は
+// `strings.HasPrefix(clean, "/assets/") || path.Ext(clean) != ""` の2項からなるが、
+// 他のケース(/assets/missing.js 等)は全て拡張子を持つため第2項だけで404になり、
+// 第1項(/assets/ プレフィックス)の検出力がテストされないまま隠れてしまう。
+// /assets/logo は第2項(path.Ext != "")が false になるケースなので、第1項を
+// 削除するとこのテストで検出できる(report.md に削除→RED→復元の実証を記載)。
 func TestServeStaticMissingAssetIs404(t *testing.T) {
 	newStaticFixture(t)
-	for _, p := range []string{"/assets/missing.js", "/missing.png", "/favicon.ico"} {
+	for _, p := range []string{"/assets/missing.js", "/missing.png", "/favicon.ico", "/assets/logo"} {
 		rec := getStatic(t, p)
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("GET %s = %d, want 404", p, rec.Code)
@@ -156,6 +168,12 @@ func TestRouterSendsNonAPIPathsToStatic(t *testing.T) {
 
 // resolveStaticPath は敵対的な入力でも root の外を指さない、という性質を固定する。
 // (path.Clean("/"+p) が ".." を先に潰すため、実際には外へ出る経路が無いことの証明)
+//
+// これは resolveStaticPath という純関数の字句的性質しか見ていない。ハンドラが
+// 実在の root 外ファイルを配らないことは TestServeStaticTraversalDoesNotLeakParentFile
+// (このファイル内)が end-to-end で検証する。serveStatic が将来 resolveStaticPath を
+// 経由しない実装(例: root + r.URL.Path の直結合)に書き換わっても、この性質テスト
+// 単体は通り続けてしまうため、end-to-end 側が必要になる。
 func TestResolveStaticPathStaysUnderRoot(t *testing.T) {
 	root := "/srv/public"
 	inputs := []string{
@@ -168,5 +186,30 @@ func TestResolveStaticPathStaysUnderRoot(t *testing.T) {
 		if got != root && !strings.HasPrefix(got, root+string(filepath.Separator)) {
 			t.Errorf("resolveStaticPath(%q, %q) = %q は root の外を指している", root, in, got)
 		}
+	}
+}
+
+// serveStatic が実在の root 外ファイルを配らないことを end-to-end で検証する。
+//
+// フィクスチャ(public ディレクトリ)の親に秘密ファイルを置き、"/../" 越しの
+// 要求がその中身を返さないことを見る。字句的性質(TestResolveStaticPathStaysUnderRoot)
+// だけでは、resolveStaticPath を経由しない実装への退行を検出できないため、
+// 実際のレスポンスボディを見るテストとして別に用意する。
+// 現行実装では clean("/../secret.txt") == "/secret.txt" が public 配下に
+// 存在せず、拡張子付き(.txt)なので規則3により 404 になる。
+func TestServeStaticTraversalDoesNotLeakParentFile(t *testing.T) {
+	dir := newStaticFixture(t)
+	secret := filepath.Join(filepath.Dir(dir), "secret.txt")
+	if err := os.WriteFile(secret, []byte("top-secret-value"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(secret) })
+
+	rec := getStatic(t, "/../secret.txt")
+	if strings.Contains(rec.Body.String(), "top-secret-value") {
+		t.Fatalf("GET /../secret.txt が root 外のファイルの中身を漏らした: body=%q", rec.Body.String())
+	}
+	if rec.Code == http.StatusOK {
+		t.Errorf("GET /../secret.txt = 200 (body=%q); root 外のファイルを配ってはならない", rec.Body.String())
 	}
 }
