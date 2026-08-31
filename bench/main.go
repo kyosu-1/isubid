@@ -19,6 +19,7 @@ func main() {
 	watchers := flag.Int("watchers", 4, "ウォッチャーworker数")
 	notifiers := flag.Int("notifiers", 2, "通知確認worker数")
 	sellers := flag.Int("sellers", 2, "出品者worker数")
+	visitors := flag.Int("visitors", 2, "ページロードを行う閲覧者worker数")
 	snapshotPath := flag.String("snapshot", "", "初期データの正解スナップショット(空なら生成データ非搭載モード)")
 	flag.Parse()
 
@@ -39,6 +40,7 @@ func main() {
 		Watchers:    *watchers,
 		Notifiers:   *notifiers,
 		Sellers:     *sellers,
+		Visitors:    *visitors,
 		Listings:    newListingPubSub(),
 		Ledger:      NewLedger(),
 		Snapshot:    snap,
@@ -103,6 +105,7 @@ func main() {
 	floor := livenessFloor(*duration)
 	workers := workerCounts{
 		Bidders: *bidders, Watchers: *watchers, Notifiers: *notifiers, Sellers: *sellers,
+		Visitors: *visitors,
 	}
 	dead := checkLiveness(breakdown, floor, workers)
 	if len(dead) == 0 {

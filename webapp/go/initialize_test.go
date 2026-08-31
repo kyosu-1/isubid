@@ -26,7 +26,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 // initApp は POST /initialize でDBを初期状態に戻す。
 func initApp(t *testing.T, ts *httptest.Server) {
 	t.Helper()
-	res, err := http.Post(ts.URL+"/initialize", "application/json", strings.NewReader("{}"))
+	res, err := http.Post(ts.URL+"/api/initialize", "application/json", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatalf("POST /initialize: %v", err)
 	}
@@ -38,7 +38,7 @@ func initApp(t *testing.T, ts *httptest.Server) {
 
 func TestInitialize(t *testing.T) {
 	ts := newTestServer(t)
-	res, err := http.Post(ts.URL+"/initialize", "application/json", strings.NewReader("{}"))
+	res, err := http.Post(ts.URL+"/api/initialize", "application/json", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestInitializeSetsRelativeEndsAt(t *testing.T) {
 	initApp(t, ts)
 	after := time.Now().UTC()
 
-	res, err := http.Get(ts.URL + "/auctions")
+	res, err := http.Get(ts.URL + "/api/auctions")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestInitializeWithoutGeneratedData(t *testing.T) {
 	ts := newTestServer(t)
 	initApp(t, ts)
 
-	res, err := http.Get(ts.URL + "/auctions")
+	res, err := http.Get(ts.URL + "/api/auctions")
 	if err != nil {
 		t.Fatal(err)
 	}

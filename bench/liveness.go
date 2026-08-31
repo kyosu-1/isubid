@@ -25,6 +25,7 @@ var scoredTags = []scoredTag{
 	{ScoreGETFeed, "GET /auctions/:id/bids"},
 	{ScoreGETNotifications, "GET /notifications"},
 	{ScorePOSTAuction, "POST /auctions"},
+	{ScoreGETPage, "GET / (ページロード)"},
 }
 
 // workerCounts は Load を駆動するワーカー数。liveness floor の条件付けに使う。
@@ -33,6 +34,7 @@ type workerCounts struct {
 	Watchers  int
 	Notifiers int
 	Sellers   int
+	Visitors  int
 }
 
 // livenessFloor は走行時間から、採点対象1本あたりの最低成功回数を返す。
@@ -65,8 +67,8 @@ func livenessFloor(d time.Duration) int64 {
 func livenessRequired(tag score.ScoreTag, w workerCounts) bool {
 	switch tag {
 	case ScoreGETList, ScoreGETDetail:
-		// bidder も watcher も一覧を引いてから詳細を開く
-		return w.Bidders > 0 || w.Watchers > 0
+		// bidder も watcher も visitor も、一覧を引いてから詳細を開く
+		return w.Bidders > 0 || w.Watchers > 0 || w.Visitors > 0
 	case ScoreGETSearch:
 		// 検索付きの一覧を叩くのは watcher だけ
 		return w.Watchers > 0
@@ -77,6 +79,9 @@ func livenessRequired(tag score.ScoreTag, w workerCounts) bool {
 		return w.Notifiers > 0
 	case ScorePOSTAuction:
 		return w.Sellers > 0
+	case ScoreGETPage:
+		// ページロードを行うのは visitor だけ
+		return w.Visitors > 0
 	}
 	return false
 }

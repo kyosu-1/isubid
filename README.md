@@ -18,8 +18,8 @@ docker compose -f dev/compose.yaml up -d --build
 # 3. ベンチ実行(60秒の負荷走行+整合性検証。-snapshot で生成データの正解を渡す)
 cd bench && go run . -target http://localhost:8080 -snapshot ../initial-data/out/snapshot.json
 
-# worker 数を変える(既定: bidders 8 / watchers 4 / notifiers 2 / sellers 2)
-go run . -target http://localhost:8080 -bidders 16 -sellers 4
+# worker 数を変える(既定: bidders 8 / watchers 4 / notifiers 2 / sellers 2 / visitors 2)
+go run . -target http://localhost:8080 -bidders 16 -sellers 4 -visitors 4
 
 # 整合性チェックのみ(負荷なし)
 go run . -target http://localhost:8080 -prepare-only -snapshot ../initial-data/out/snapshot.json
@@ -40,6 +40,17 @@ cd webapp/go && go test ./...
 cd bench && go test ./...
 ```
 
+### フロントエンドを変更したとき
+
+```bash
+cd webapp/frontend && npm install && npm run build   # -> webapp/public/
+cd ../../bench && go run ./cmd/genmanifest -public ../webapp/public -out assets/manifest.json
+go test ./...                                        # マニフェストのドリフト検知
+```
+
+`webapp/public/` と `bench/assets/manifest.json` はセットでコミットする。
+片方だけ更新すると Prepare がアセットのハッシュ不一致で FAIL する。
+
 ## ステータス
 
 Phase 3(pub/sub要素)まで完了。入札フィード・通知ファンアウト・終了処理と落札確定・
@@ -54,4 +65,10 @@ live auction が増えて入札が薄く分散したことによる検出器の�
 ゲート4の不合格も検出器の感度低下ではなく `GET /auctions` の全件タイムアウトで
 入札が1件も成立しなかったことによる検出不能という、全く異なる機序だった。
 詳細は `docs/phase4-notes.md` の「サイジング実測」節と4-Eへの持ち越しを参照。
-フロントエンド・検索・アイコンBLOB・レギュレーション文書は Phase 4 の残りタスク。
+Phase 4-B(一覧・検索)、4-C(アイコンBLOB)、4-D(SPAフロントエンドと静的配信)、
+4-E1(ベンチの合否判定)も完了。SPA(React 18 + Vite 5 + TypeScript、6画面)の
+ビルド成果物を `webapp/public/` にコミットし、アプリ経由の静的配信を攻略対象として
+走行に乗せている。API は SPA のクライアントルートとの衝突を避けるため `/api` 配下。
+**フロントエンドは参加者が触らない前提で、Prepare が成果物のハッシュを照合する。**
+
+レギュレーション文書・マニュアル・writeup は Phase 4-F の残りタスク。

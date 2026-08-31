@@ -33,7 +33,7 @@ func TestScoredTagsCoversScoreTable(t *testing.T) {
 // floor が課されることを固定する。新しい採点タグを livenessRequired へ足し忘れると、
 // そのエンドポイントは黙って判定をすり抜ける。
 func TestLivenessRequiredCoversAllTags(t *testing.T) {
-	all := workerCounts{Bidders: 1, Watchers: 1, Notifiers: 1, Sellers: 1}
+	all := workerCounts{Bidders: 1, Watchers: 1, Notifiers: 1, Sellers: 1, Visitors: 1}
 	for _, st := range scoredTags {
 		if !livenessRequired(st.Tag, all) {
 			t.Errorf("%q に floor が課されていない", st.Tag)
@@ -94,6 +94,26 @@ func TestLivenessRequiredRespectsWorkerCounts(t *testing.T) {
 		t.Error("bidders=1 なのに GET /auctions に floor が課されていない")
 	}
 
+	noVisitors := workerCounts{Bidders: 1, Watchers: 1, Notifiers: 1, Sellers: 1, Visitors: 0}
+	if livenessRequired(ScoreGETPage, noVisitors) {
+		t.Error("visitors=0 なのに GET / (ページロード) に floor が課されている")
+	}
+	// 一覧と詳細は bidder / watcher も叩くので、visitor を止めても課され続ける
+	if !livenessRequired(ScoreGETList, noVisitors) {
+		t.Error("bidders=1 なのに GET /auctions に floor が課されていない")
+	}
+
+	onlyVisitors := workerCounts{Visitors: 1}
+	if !livenessRequired(ScoreGETPage, onlyVisitors) {
+		t.Error("visitors=1 なのに GET / (ページロード) に floor が課されていない")
+	}
+	if !livenessRequired(ScoreGETList, onlyVisitors) {
+		t.Error("visitors=1 なのに GET /auctions に floor が課されていない")
+	}
+	if livenessRequired(ScorePOSTBid, onlyVisitors) {
+		t.Error("bidders=0 なのに POST /auctions/:id/bids に floor が課されている")
+	}
+
 	none := workerCounts{}
 	for _, st := range scoredTags {
 		if livenessRequired(st.Tag, none) {
@@ -103,7 +123,7 @@ func TestLivenessRequiredRespectsWorkerCounts(t *testing.T) {
 }
 
 func TestCheckLiveness(t *testing.T) {
-	all := workerCounts{Bidders: 8, Watchers: 4, Notifiers: 2, Sellers: 2}
+	all := workerCounts{Bidders: 8, Watchers: 4, Notifiers: 2, Sellers: 2, Visitors: 2}
 
 	// 全て floor 以上なら空
 	healthy := map[score.ScoreTag]int64{}
@@ -141,14 +161,15 @@ func TestCheckLiveness(t *testing.T) {
 		ScoreGETFeed:          0,
 		ScoreGETNotifications: 513,
 		ScorePOSTAuction:      493,
+		ScoreGETPage:          0,
 	}
 	dead := checkLiveness(partial, 6, all)
-	if len(dead) != 5 {
-		t.Fatalf("下回ったのが %d件, want 5件: %+v", len(dead), dead)
+	if len(dead) != 6 {
+		t.Fatalf("下回ったのが %d件, want 6件: %+v", len(dead), dead)
 	}
 	// 返る順序は scoredTags の順であること(出力の安定性のため)
 	wantOrder := []score.ScoreTag{
-		ScoreGETList, ScoreGETSearch, ScoreGETDetail, ScorePOSTBid, ScoreGETFeed,
+		ScoreGETList, ScoreGETSearch, ScoreGETDetail, ScorePOSTBid, ScoreGETFeed, ScoreGETPage,
 	}
 	for i, want := range wantOrder {
 		if dead[i].Tag != want {

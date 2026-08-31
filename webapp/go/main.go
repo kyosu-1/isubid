@@ -20,19 +20,31 @@ func newRouter(db *sqlx.DB) http.Handler {
 
 // routerFor は handler からルーターを組み立てる。
 // main はバッチ用に handler を先に作る必要があるため分離している。
+//
+// API は /api 配下に置く。SPA のクライアントルート(/auctions/123 など)と
+// API のパスが同一になると、chi が API ハンドラを先にマッチさせてしまい
+// ディープリンクが JSON を返す。ISUCON11/12/13 が同じ理由で同じ形を採っている。
+//
+// POST /initialize も例外にしない。ここだけ /api の外に出すと nginx の分担
+// (location /api/ → app / それ以外は静的)が割れなくなる。
 func routerFor(h *handler) http.Handler {
 	r := chi.NewRouter()
-	r.Post("/initialize", h.postInitialize)
-	r.Post("/register", h.postRegister)
-	r.Post("/login", h.postLogin)
-	r.Get("/auctions", h.getAuctions)
-	r.Post("/auctions", h.postAuction)
-	r.Get("/auctions/{id}", h.getAuction)
-	r.Get("/auctions/{id}/bids", h.getAuctionBids)
-	r.Post("/auctions/{id}/bids", h.postBid)
-	r.Get("/notifications", h.getNotifications)
-	r.Get("/users/{id}/icon", h.getUserIcon)
-	r.Get("/stats/me", h.getStatsMe)
+	r.Route("/api", func(r chi.Router) {
+		r.Post("/initialize", h.postInitialize)
+		r.Post("/register", h.postRegister)
+		r.Post("/login", h.postLogin)
+		r.Get("/me", h.getMe)
+		r.Get("/auctions", h.getAuctions)
+		r.Post("/auctions", h.postAuction)
+		r.Get("/auctions/{id}", h.getAuction)
+		r.Get("/auctions/{id}/bids", h.getAuctionBids)
+		r.Post("/auctions/{id}/bids", h.postBid)
+		r.Get("/notifications", h.getNotifications)
+		r.Get("/users/{id}/icon", h.getUserIcon)
+		r.Get("/stats/me", h.getStatsMe)
+	})
+	// /api 以外はすべて静的配信(SPA)へ回す。
+	r.NotFound(h.serveStatic)
 	return r
 }
 

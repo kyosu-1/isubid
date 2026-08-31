@@ -10,6 +10,21 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-30-isubid-phase4d-spa-frontend-design.md`
 
+> **改訂について(2026-08-31)。** 本計画は 4-B / 4-C / 4-E1 が着地する前に書かれた。
+> 設計文書が同日に改訂されたので、それを正として次を追随させた。9タスクの分割と順序は
+> 変えていない。
+>
+> | 改訂 | 影響したタスク | 元はどうだったか |
+> |---|---|---|
+> | `/api` 移行の対象が11ルート・`bench/client.go` 12箇所・`bench/scenario.go` 2箇所(いずれも 2026-08-31 の実測) | Task 1 | `/users/{id}/icon`(4-C)が無い10ルート前提。置換対象に `bench/scenario.go` が入っていなかった |
+> | 一覧 API が `{auctions, total_count, has_next}` になり `?page=` を受ける(4-B) | Task 4・Task 5・Task 8 | 裸の JSON 配列前提。`api.auctions()` に page が無く、一覧画面にページ送りも無かった |
+> | `GET /api/users/:id/icon` が実在する(4-C) | Task 4・Task 5・Task 6 | アイコンは「4-C 待ち」の未確定事項だった |
+> | 採点タグの登録先が `bench/liveness.go` の `scoredTags` と `livenessRequired` の2箇所になった(4-E1) | Task 8 | `bench/main.go` に内訳が直書きされていた時代の前提。`scoredTags` も `livenessRequired` も存在しなかった |
+> | ゲート判定が `LIVENESS: PASS` の確認に置き換わり、G5(Prepare 3回連続・6秒基準)が増えた(4-E1) | Task 9 | 「採点対象すべてが0回でないことを目視で明示的に確認」だった |
+>
+> 現物との照合で見つかった食い違い(計画が書かれた後にコードが動いていた箇所)も
+> あわせて直した。各タスクの `> **改訂:**` 引用がその内訳である。
+
 ## Global Constraints
 
 - 両モジュールとも Go 1.26。`gofmt -l` が何も出力せず、`go vet ./...` が通ること
@@ -20,6 +35,15 @@
 - フロントエンドに状態管理ライブラリと CSS フレームワークを追加しない
 - **`GET /api/me` に意図的な遅さを入れない**(全画面の初期表示が通るため、他の計測を濁らせる)
 - **`ScoreGETPage` はページロード1回につき1点。アセット1本ごとに加点しない**(キャッシュを効かせる正しい最適化がスコアを下げるため)
+- **新しい採点タグは `bench/score.go` の `scoreTable` に加えて、`bench/liveness.go` の
+  `scoredTags` と `livenessRequired` の両方へ必ず登録する**(4-E1)。`scoredTags` を忘れると
+  内訳の合計が `raw` と一致しなくなり、`livenessRequired` を忘れると新エンドポイントが
+  liveness 判定を黙ってすり抜ける。`TestScoredTagsCoversScoreTable` と
+  `TestLivenessRequiredCoversAllTags` の2本が固定しているので、忘れれば `bench` の単体テストが落ちる
+- **一覧 API の契約は `{auctions, total_count, has_next}`**(4-B)。`?page=` / `?q=` / `?category=`
+  を受ける。`per_page` は返らずサーバ定数の **20件固定**。**裸の JSON 配列を前提にしたコードを書かない**
+- **カテゴリはフロント側に3件をハードコードする。** `GET /api/categories` を作らない
+  (`/initialize` が常に同じ3件へ戻すため。API 面を増やすとベンチ検証も足す必要が出る)
 - アセット検証は **200 と 304 の両方を受理**し、ハッシュは**デコード後のバイト列**で取る(gzip/br を許容するため)
 - Content-Type の検証は `/index.html` が `text/html` で始まること、それ以外のアセットが `text/html` で始まら**ない**ことのみ
 - 実測値は実際に観測した出力だけを書く。走らせていない結果を書かない
@@ -38,6 +62,8 @@
 | `bench/assets/manifest.json` | `go:embed` される正解ハッシュ表 |
 | `bench/cmd/genmanifest/main.go` | `webapp/public` からマニフェストを生成 |
 | `bench/assets_test.go` | マニフェストのドリフト検知とバンドル上限 |
+| `bench/liveness.go` / `liveness_test.go` | **(4-E1 で新設)** `scoredTags` と `livenessRequired`。`ScoreGETPage` の登録先(Task 8) |
+| `bench/main.go` | フラグ、スコア内訳の出力(`scoredTags` を回す)、`workerCounts` の組み立て |
 | `dev/compose.yaml` | `webapp/public` のマウントと `ISUBID_PUBLIC_DIR` |
 
 ---
@@ -50,9 +76,20 @@
 **Interfaces:**
 - Produces: 全 API が `/api` prefix を持つ。`/api` 以外のパスは以降のタスクで静的配信に回る
 
+> **改訂(2026-08-31):** 執筆時点で `GET /users/{id}/icon` は存在しなかった(4-C で実装)。
+> 移行対象は **11ルート**、`bench/client.go` の**12箇所**、`bench/scenario.go` の**2箇所**である
+> (設計 §3.1 の表と、下記 Step 2 のコマンドで実測して確認すること)。
+> 置換対象に `bench/scenario.go` が入っていなかったのも欠落だったので足した。
+> 置換の正規表現にも `users` を加えてある。
+
+**`POST /initialize` も `/api` 配下へ移す**(設計 §3.1)。例外を作ると nginx の分担
+(`location /api/ → app` / それ以外は静的)が割れなくなり、この案を採った理由が薄れる。
+下の `routerFor` はそうなっている。
+
 - [ ] **Step 1: ルータを `/api` で束ねる**
 
 `webapp/go/main.go` の `routerFor` を差し替える。ハンドラ本体は一切変更しない。
+**11ルートすべてが `/api` の内側に入ること**(`/users/{id}/icon` を落とさない)。
 
 ```go
 // routerFor は handler からルーターを組み立てる。
@@ -61,6 +98,9 @@
 // API は /api 配下に置く。SPA のクライアントルート(/auctions/123 など)と
 // API のパスが同一になると、chi が API ハンドラを先にマッチさせてしまい
 // ディープリンクが JSON を返す。ISUCON11/12/13 が同じ理由で同じ形を採っている。
+//
+// POST /initialize も例外にしない。ここだけ /api の外に出すと nginx の分担
+// (location /api/ → app / それ以外は静的)が割れなくなる。
 func routerFor(h *handler) http.Handler {
 	r := chi.NewRouter()
 	r.Route("/api", func(r chi.Router) {
@@ -73,6 +113,7 @@ func routerFor(h *handler) http.Handler {
 		r.Get("/auctions/{id}/bids", h.getAuctionBids)
 		r.Post("/auctions/{id}/bids", h.postBid)
 		r.Get("/notifications", h.getNotifications)
+		r.Get("/users/{id}/icon", h.getUserIcon)
 		r.Get("/stats/me", h.getStatsMe)
 	})
 	return r
@@ -83,16 +124,27 @@ func routerFor(h *handler) http.Handler {
 
 Run:
 ```bash
-grep -c '"/\(initialize\|register\|login\|auctions\|notifications\|stats\)' webapp/go/*_test.go bench/client.go
+grep -c '"/\(initialize\|register\|login\|auctions\|notifications\|stats\|users\)' \
+  webapp/go/*_test.go bench/client.go bench/scenario.go
 ```
-出力を控えておく。Step 4 の検算に使う。
+出力を控えておく。Step 4 の検算に使う。**2026-08-31 時点の実測では
+`bench/client.go` が 12、`bench/scenario.go` が 3**(うち1つは
+`// GetAuctionsRaw は "/auctions?" + rawQuery を…` というコメント。置換されるが、
+移行後の実際のパスは `/api/auctions?` なので書き換わったほうが正しい)。
 
 - [ ] **Step 3: テストとベンチのパス文字列を機械的に置換する**
 
 Run:
 ```bash
-perl -pi -e 's{"/(initialize|register|login|auctions|notifications|stats)}{"/api/$1}g' webapp/go/*_test.go bench/client.go
+perl -pi -e 's{"/(initialize|register|login|auctions|notifications|stats|users)}{"/api/$1}g' \
+  webapp/go/*_test.go bench/client.go bench/scenario.go
 ```
+
+`users` を含めるのは `bench/client.go` の `GetUserIcon`
+(`fmt.Sprintf("/users/%d/icon", id)`)と `bench/scenario.go` の
+`c.doRaw(ctx, "/users/notanumber/icon")` のためである。この正規表現は
+`"` の直後に来るパスだけを拾うので、`"GET /auctions: …"` のような**エラーメッセージは
+マッチしない**(それらは Step 5 で直す)。
 
 - [ ] **Step 4: 二重付与が無いことを確認する**
 
@@ -104,9 +156,16 @@ Expected: 何もマッチしない(`exit=1`)。マッチしたら該当行を手
 
 Run:
 ```bash
-grep -rn '"/\(initialize\|register\|login\|auctions\|notifications\|stats\)' webapp/go/*_test.go bench/client.go ; echo "exit=$?"
+grep -rn '"/\(initialize\|register\|login\|auctions\|notifications\|stats\|users\)' \
+  webapp/go/*_test.go bench/client.go bench/scenario.go ; echo "exit=$?"
 ```
 Expected: 何もマッチしない(`exit=1`)。残っていれば `/api` を付け忘れている。
+
+Run:
+```bash
+grep -c 'r\.\(Get\|Post\)("' webapp/go/main.go
+```
+Expected: `11`。10 なら `/users/{id}/icon` を落としている。
 
 - [ ] **Step 5: ベンチのエラーメッセージ内のパス表記も直す**
 
@@ -114,9 +173,25 @@ Expected: 何もマッチしない(`exit=1`)。残っていれば `/api` を付�
 
 Run:
 ```bash
-grep -rn 'GET /auctions\|POST /auctions\|GET /notifications\|GET /stats/me\|POST /initialize\|POST /login\|POST /register\|GET /auctions/' bench/*.go
+grep -rn 'GET /auctions\|POST /auctions\|GET /notifications\|GET /stats/me\|POST /initialize\|POST /login\|POST /register\|GET /users/' bench/*.go
 ```
-ヒットした文字列リテラル(`fmt.Errorf` / `fmt.Sprintf` の中)のパス部分に `/api` を足す。`bench/client.go` は Step 3 で置換済みなので、残るのは `bench/load.go` と `bench/scenario.go` のメッセージである。
+ヒットした文字列リテラル(`fmt.Errorf` / `fmt.Sprintf` の中)のパス部分に `/api` を足す。
+Step 3 でパスそのものは置換済みなので、ここで残るのは**メッセージ内の表記だけ**である。
+対象は `bench/client.go`(`GET %s` 形式でないベタ書き: `GET /notifications` /
+`GET /stats/me` / `POST /auctions` / `POST /initialize`)、`bench/load.go`、
+`bench/scenario.go`(`GET /users/notanumber/icon` を含む)。
+
+なお `bench/scenario.go` の検索プローブのラベル
+(`"GET /auctions?q=" + probeTitleOnly + " (title専用プローブ)"` など5件)も
+ここに含まれる。ラベルはそのまま Prepare の失敗メッセージに出るので忘れないこと。
+
+**採点タグの文字列(`bench/score.go` の `ScoreGETList = "GET /auctions"` など)と
+`bench/liveness.go` の `scoredTags` の表示名は、本フェーズでは触らない。** これは
+意図的な先送りである: 両者は必ず対で直す必要があり(片方だけ直すと
+`TestScoredTagsCoversScoreTable` は通るのに内訳の表示名だけがズレる)、直すと
+`docs/phase4-notes.md` に残る 4-A / 4-B / 4-C / 4-E1 の実測ログとの文字列突合が
+すべて壊れる。表示名は正しさの検証に一切使われていないので、**`/api` を反映するかどうかは
+4-F(レギュレーション文書)で他の表記と一緒に決める**。Task 9 の持ち越しに書くこと。
 
 - [ ] **Step 6: README のコマンド例を直す**
 
@@ -302,25 +377,33 @@ func (c *Client) GetMe(ctx context.Context) (*User, error) {
 
 - [ ] **Step 6: Prepare に検証を足す**
 
-`bench/scenario.go` の `Prepare` の中、シードユーザーでログインした直後(既存のログイン処理の後)に以下を足す。既存のログイン済みクライアント変数名は実際のコードを読んで合わせること。
+> **改訂(2026-08-31):** 元は「既存のログイン済みクライアント変数名は実際のコードを読んで
+> 合わせること」というプレースホルダだった。現物(`bench/scenario.go` の `Prepare` 手順3)を
+> 読んで確定させた。ログイン済みクライアントは `seedClient`、その User は `seedUser` である。
+> Prepare の主クライアント `c` は手順3で `Register` しているため**ログイン済み**であり、
+> 未ログインの検証には使えない。
+
+`bench/scenario.go` の `Prepare` の手順3(`// 3. 新規ユーザー登録と、シードユーザーのログイン`)の
+末尾、`seedUser, err := seedClient.Login(...)` のエラーチェック直後・手順4
+(`// 4. 入札の検証`)の手前に、そのまま以下を挿入する。
 
 ```go
 	// セッションが実際に確立していることを /api/me で確認する。
-	me, err := c.GetMe(ctx)
+	// SPA はリロード後にこの1本だけで身元を解決するので、ここが壊れると
+	// ログイン済みの画面がすべてゲスト表示になる。
+	me, err := seedClient.GetMe(ctx)
 	if err != nil {
 		return err
 	}
 	if me == nil {
 		return fmt.Errorf("GET /api/me: ログイン直後なのに401が返った")
 	}
-	if me.ID != loggedIn.ID || me.Name != loggedIn.Name {
-		return fmt.Errorf("GET /api/me: %+v (期待: %+v)", *me, *loggedIn)
+	if me.ID != seedUser.ID || me.Name != seedUser.Name {
+		return fmt.Errorf("GET /api/me: %+v (期待: %+v)", *me, *seedUser)
 	}
-```
 
-さらに、未ログインのクライアントで 401 になることも確認する:
-
-```go
+	// 未ログインのクライアントでは401になること。
+	// c は上で Register 済み(= ログイン済み)なので流用できない。
 	guest, err := NewClient(s.Target)
 	if err != nil {
 		return err
@@ -359,6 +442,15 @@ git commit -m "feat: GET /api/me を追加し SPA のリロード後の身元解
 **Interfaces:**
 - Consumes: Task 1 の `/api` サブルータ
 - Produces: `/api` 以外の全パスが静的配信に回る。`resolveStaticPath(root, urlPath string) string` は URL パスを public 配下の実パスへ解決する純粋関数
+
+> **改訂(2026-08-31): 内容の変更なし。** 4-B / 4-C / 4-E1 は静的配信に触れていない。
+> 現物と照合して次を確認済み: `webapp/go/go.mod` の chi は **v5.3.1**(Step 1 のテストの
+> コメントが主張しているとおり)、`dev/compose.yaml` の `app` / `nginx` に
+> `webapp/public` のマウントはまだ無い(Step 6 で足す)、`getEnv` は `webapp/go/db.go`、
+> `writeError` は `webapp/go/main.go` にある。
+>
+> アイコン(`/api/users/{id}/icon`)は Task 1 で `/api` の内側に入るので、静的ハンドラには
+> 到達しない(設計 §7.3)。`serveStatic` 側に特別扱いは要らない。
 
 - [ ] **Step 1: 失敗するテストを書く**
 
@@ -876,6 +968,21 @@ export default defineConfig({
 
 - [ ] **Step 5: API クライアントを書く**
 
+> **改訂(2026-08-31):** 4-B で一覧の契約が変わり、4-C でアイコンが実装されたので、
+> このファイルは書き換わっている。元との差分:
+>
+> - `api.auctions()` の戻りが `AuctionSummary[]` → **`AuctionList`**
+>   (`{auctions, total_count, has_next}`)。`page` 引数を足した
+> - `api.notifications()` が `Notification[]` を直に受け取る形だった。
+>   **現物の `GET /notifications` は `{"notifications": [...]}` で包まれている**
+>   (`webapp/go/notifications.go` の `writeJSON(w, 200, map[string]any{"notifications": out})`、
+>   `bench/client.go` の `GetNotifications` も同じ形で剥がしている)。**これは 4-B とは無関係の、
+>   計画執筆時からあった誤りである。**そのまま実装すると通知画面が必ず壊れる
+> - `iconURL()` を足した(4-C)
+> - `CATEGORIES` のコメントにあった「4-B がカテゴリ絞り込みを実装する際に
+>   `GET /api/categories` を設けるなら、ここを差し替える」は、4-B が着地して
+>   専用エンドポイントを設けないと決まったので落とした(設計 §7.2)
+
 `webapp/frontend/src/api.ts`。型は `bench/model.go` の JSON タグと1対1で対応させること(ベンチとフロントで同じレスポンスを見ているという保証になる)。
 
 ```ts
@@ -895,6 +1002,19 @@ export type AuctionSummary = {
   ends_at: string
   status: 'upcoming' | 'live' | 'closed'
 }
+
+// GET /api/auctions のレスポンス(4-B)。裸の配列ではない。
+// per_page は返らない。サーバ定数の20件固定で、次ページの有無は has_next が持つ。
+export type AuctionList = {
+  auctions: AuctionSummary[]
+  total_count: number
+  has_next: boolean
+}
+
+// AUCTIONS_PER_PAGE はサーバ側の定数(webapp/go/auctions.go の auctionsPerPage)を
+// 画面が「何件目〜何件目を表示中か」を出すためだけに写したもの。
+// リクエストには送らない(API は per_page を受け付けない)。
+export const AUCTIONS_PER_PAGE = 20
 
 export type Bid = { id: number; user: User; amount: number; created_at: string }
 
@@ -956,15 +1076,23 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 // カテゴリは初期データで固定されている(webapp/sql/90_seed_phase1.sql)。
-// 一覧の絞り込みと出品フォームで使う。専用エンドポイントを足していないのは、
-// この3件が /initialize で必ず復元される固定値であり、API 面を増やすと
-// ベンチ側にも検証を足す必要が出るためである。
-// 4-B がカテゴリ絞り込みを実装する際に GET /api/categories を設けるなら、ここを差し替える。
+// 一覧の絞り込みと出品フォームで使う。専用エンドポイント(GET /api/categories)を
+// 設けないのは意図的である: この3件は /initialize が必ず同じ内容へ復元する固定値であり、
+// API 面を1本増やせばベンチにも検証を1本足す必要が出る(設計 §7.2)。
 export const CATEGORIES: { id: number; name: string }[] = [
   { id: 1, name: 'オフィスチェア' },
   { id: 2, name: 'ゲーミングチェア' },
   { id: 3, name: 'アンティーク' },
 ]
+
+// iconURL は出品者アイコンの URL(4-C)。
+// API ルートなので静的ハンドラには届かず、ベンチのアセットマニフェストにも載らない
+// (マニフェストは webapp/public を歩いて作る。設計 §7.3)。
+export function iconURL(userID: number): string {
+  return `/api/users/${userID}/icon`
+}
+
+export type AuctionListQuery = { page?: number; q?: string; category?: number }
 
 export const api = {
   me: () => call<User>('/me'),
@@ -972,15 +1100,18 @@ export const api = {
     call<User>('/login', { method: 'POST', body: JSON.stringify({ name, password }) }),
   register: (name: string, password: string) =>
     call<User>('/register', { method: 'POST', body: JSON.stringify({ name, password }) }),
-  auctions: (q?: string, categoryID?: number) => {
+  // 応答は {auctions, total_count, has_next}(4-B)。裸の配列ではない。
+  // page を送らないとサーバー既定の1ページ目になる。
+  auctions: ({ page, q, category }: AuctionListQuery = {}) => {
     const p = new URLSearchParams()
+    if (page && page > 1) p.set('page', String(page))
     if (q) p.set('q', q)
-    if (categoryID) p.set('category', String(categoryID))
+    if (category) p.set('category', String(category))
     const qs = p.toString()
-    return call<AuctionSummary[]>('/auctions' + (qs ? '?' + qs : ''))
+    return call<AuctionList>('/auctions' + (qs ? '?' + qs : ''))
   },
   auction: (id: number) => call<AuctionDetail>(`/auctions/${id}`),
-  // フィードの応答は {"bids":[...]} で包まれている(bench/client.go の GetFeed と同じ)。
+  // フィードの応答は {"bids":[...]} で包まれている(bench/client.go の GetBidFeed と同じ)。
   bidsSince: (id: number, since: number) =>
     call<{ bids: Bid[] }>(`/auctions/${id}/bids?since=${since}`).then((r) => r.bids),
   bid: (id: number, amount: number) =>
@@ -995,12 +1126,20 @@ export const api = {
     starting_price: number
     duration_seconds: number
   }) => call<AuctionCreated>('/auctions', { method: 'POST', body: JSON.stringify(input) }),
-  notifications: () => call<Notification[]>('/notifications'),
+  // 通知の応答も {"notifications":[...]} で包まれている
+  // (webapp/go/notifications.go / bench/client.go の GetNotifications と同じ)。
+  notifications: () =>
+    call<{ notifications: Notification[] }>('/notifications').then((r) => r.notifications),
   stats: () => call<Stats>('/stats/me'),
 }
 ```
 
 **注意:** `api.sell` の `duration_seconds` はサーバー側で 10〜300 の範囲に制限されている(`webapp/go/auctions.go` の `postAuction`)。出品フォームの入力もこの範囲に制限すること。
+
+**注意:** 一覧・通知・フィードの3本は**いずれもオブジェクトで包まれている**。
+`auctions` だけ剥がして `notifications` を剥がし忘れる、という取り違えをしないこと。
+包まれていないのは `GET /api/auctions/:id`(詳細)・`GET /api/stats/me`・`GET /api/me`・
+`POST /api/login` / `register` / `auctions` / `auctions/:id/bids` である。
 
 - [ ] **Step 6: 認証コンテキストを書く**
 
@@ -1286,12 +1425,25 @@ JSX を1行単位で固定してもレビュアが検証できる対象が増え
 
 - [ ] **Step 1: 一覧画面を書く**
 
+> **改訂(2026-08-31):** 4-B で一覧の契約が変わり、4-C でアイコンが実装されたので全面的に
+> 書き換えた。元は次のようになっていた。
+>
+> - `api.auctions()` の戻りを**裸の配列**として `setItems` に渡していた。
+>   現在の応答は `{auctions, total_count, has_next}` なので、そのままでは
+>   `items.map` が落ちる
+> - **ページ送りが無かった。** 一覧は20件で切られるため、これが無いと21件目以降に
+>   到達する手段が画面に存在しない
+> - `?page=` を `useSearchParams` に載せていなかった(`?q=` と `?category=` は載っていた)。
+>   コンポーネント内の状態に留めると、ページを送っても URL が変わらず
+>   リロードと「戻る」が壊れる(設計 §7.2)
+> - **出品者アイコンを出していなかった**(4-C 未着地だったため)
+
 `webapp/frontend/src/pages/AuctionList.tsx`:
 
 ```tsx
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { api, CATEGORIES, type AuctionSummary } from '../api'
+import { api, AUCTIONS_PER_PAGE, CATEGORIES, iconURL, type AuctionList as List } from '../api'
 
 function remaining(endsAt: string): string {
   const ms = new Date(endsAt).getTime() - Date.now()
@@ -1303,39 +1455,63 @@ function remaining(endsAt: string): string {
   return `残り${Math.floor(m / 60)}時間`
 }
 
+// parsePage は ?page= を1以上の整数に正規化する。
+// 不正値でサーバーに400を撃たせないよう、画面側で1へ丸める。
+function parsePage(raw: string | null): number {
+  const n = Number(raw)
+  return Number.isInteger(n) && n >= 1 ? n : 1
+}
+
 export function AuctionList() {
+  // 検索条件もページ番号も URL のクエリに置く。コンポーネントの state に留めると、
+  // ページを送っても URL が変わらないためリロードと「戻る」が壊れ、
+  // 共有リンクも同じ結果を再現しない(設計 §7.2)。
   const [params, setParams] = useSearchParams()
   const q = params.get('q') ?? ''
   const category = params.get('category') ?? ''
-  const [items, setItems] = useState<AuctionSummary[]>([])
+  const page = parsePage(params.get('page'))
+
+  const [list, setList] = useState<List | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     setLoading(true)
+    setError('')
     api
-      .auctions(q || undefined, category ? Number(category) : undefined)
-      .then(setItems)
+      .auctions({ page, q: q || undefined, category: category ? Number(category) : undefined })
+      .then(setList)
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false))
-  }, [q, category])
+  }, [page, q, category])
+
+  // 検索条件を変えたらページは1へ戻す(3ページ目のまま絞り込むと空振りするため)。
+  function submitSearch(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    const f = new FormData(e.currentTarget)
+    const next = new URLSearchParams()
+    const nq = String(f.get('q') ?? '')
+    const nc = String(f.get('category') ?? '')
+    if (nq) next.set('q', nq)
+    if (nc) next.set('category', nc)
+    setParams(next)
+  }
+
+  function goToPage(next: number) {
+    const p = new URLSearchParams(params)
+    if (next <= 1) p.delete('page')
+    else p.set('page', String(next))
+    setParams(p)
+  }
+
+  const items = list?.auctions ?? []
+  const total = list?.total_count ?? 0
+  const first = total === 0 ? 0 : (page - 1) * AUCTIONS_PER_PAGE + 1
+  const last = (page - 1) * AUCTIONS_PER_PAGE + items.length
 
   return (
     <>
-      <form
-        className="row"
-        style={{ marginBottom: '1rem' }}
-        onSubmit={(e) => {
-          e.preventDefault()
-          const f = new FormData(e.currentTarget as HTMLFormElement)
-          const next = new URLSearchParams()
-          const nq = String(f.get('q') ?? '')
-          const nc = String(f.get('category') ?? '')
-          if (nq) next.set('q', nq)
-          if (nc) next.set('category', nc)
-          setParams(next)
-        }}
-      >
+      <form className="row" style={{ marginBottom: '1rem' }} onSubmit={submitSearch}>
         <input name="q" defaultValue={q} placeholder="キーワードで検索" />
         <select name="category" defaultValue={category} style={{ width: 200 }}>
           <option value="">すべてのカテゴリ</option>
@@ -1350,7 +1526,11 @@ export function AuctionList() {
 
       {error && <p className="error">{error}</p>}
       {loading && <p className="muted">読み込み中…</p>}
-      {!loading && items.length === 0 && <p className="muted">開催中のオークションはありません。</p>}
+      {!loading && !error && (
+        <p className="muted">
+          {total === 0 ? '該当するオークションはありません。' : `全${total.toLocaleString()}件中 ${first}〜${last}件`}
+        </p>
+      )}
 
       {items.map((a) => (
         <div className="card" key={a.id}>
@@ -1364,12 +1544,35 @@ export function AuctionList() {
               {remaining(a.ends_at)}
             </span>
           </div>
-          <div className="muted">出品者: {a.seller.name}</div>
+          <div className="row muted" style={{ gap: '0.4rem' }}>
+            {/* アイコンは API ルート(/api/users/:id/icon)。未設定なら404が返るので
+                alt を出さない空文字にして、壊れた画像アイコンだけを表示させる。 */}
+            <img className="icon" src={iconURL(a.seller.id)} alt="" width={24} height={24} />
+            <span>出品者: {a.seller.name}</span>
+          </div>
         </div>
       ))}
+
+      {!loading && total > 0 && (
+        <div className="row" style={{ justifyContent: 'center', marginTop: '1rem' }}>
+          <button type="button" onClick={() => goToPage(page - 1)} disabled={page <= 1}>
+            前へ
+          </button>
+          <span className="muted">{page}ページ目</span>
+          <button type="button" onClick={() => goToPage(page + 1)} disabled={!list?.has_next}>
+            次へ
+          </button>
+        </div>
+      )}
     </>
   )
 }
+```
+
+`styles.css` に `.icon` を1つ足す(Task 4 Step 7 の CSS の末尾に追記):
+
+```css
+.icon { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; background: var(--line); }
 ```
 
 - [ ] **Step 2: 詳細画面を書く**
@@ -1584,13 +1787,19 @@ curl -s -XPOST http://localhost:8080/api/initialize -o /dev/null -w '%{http_code
 ```
 ブラウザで `http://localhost:8080/` を開き、以下を実際に確認して報告に書く。
 
-1. 一覧が表示される
-2. 詳細を開くと入札履歴が出る
-3. `seed_user_05` / `password` でログインできる
-4. 入札すると履歴が増える
-5. 出品すると詳細画面へ遷移する
-6. 通知・売上が表示される
-7. `http://localhost:8080/auctions/1` を直接リロードしても 200 で画面が出る(SPAフォールバック)
+1. 一覧が表示され、「全N件中 1〜20件」が出る
+2. **「次へ」を押すと URL が `/?page=2` になり、別の20件が出る。**
+   ブラウザの「戻る」で1ページ目に戻る。`/?page=2` を直接リロードしても同じ2ページ目が出る
+3. **検索とカテゴリ絞り込みが効き、`?q=` / `?category=` が URL に載る。**
+   絞り込むと `page` が落ちて1ページ目に戻る
+4. **一覧に出品者アイコンが表示される**(生成データのユーザーはアイコンを持つ。
+   シードユーザー(id 1〜20)は未設定なので 404 になり、画像が出ないのが正常)
+5. 詳細を開くと入札履歴が出る
+6. `seed_user_05` / `password` でログインできる
+7. 入札すると履歴が増える
+8. 出品すると詳細画面へ遷移する
+9. **通知が表示される**(`{"notifications":[...]}` の剥がし忘れがあるとここで空になるか例外になる)。売上も表示される
+10. `http://localhost:8080/auctions/1` を直接リロードしても 200 で画面が出る(SPAフォールバック)
 
 ブラウザを使えない場合は、その旨を報告に明記し、`curl` で確認できる範囲(1・7と各 API の応答)だけを記録すること。**確認していない項目を「確認した」と書かないこと。**
 
@@ -1615,6 +1824,26 @@ git commit -m "feat: SPA の残り5画面(一覧/詳細/出品/通知/売上)を
   - `type ManifestFile struct { Path, SHA256, ContentType string; Size int64 }`
   - `type Manifest struct { GeneratedAt time.Time; Files []ManifestFile }`
   - `func LoadEmbeddedManifest() (*Manifest, error)`
+
+> **改訂(2026-08-31): 生成器・型・ドリフトテストの内容は変更なし。** 4-C(アイコン)が
+> 着地したので、その関係だけ明記した。
+>
+> **ユーザーアイコンはマニフェストに載らないし、載せてはならない**(設計 §7.3)。
+> 理由は2つあり、どちらも自動的に成立する:
+>
+> 1. マニフェストは `webapp/public` を歩いて作る。アイコンの実体は DB の LONGBLOB なので
+>    そもそもディレクトリに存在しない
+> 2. アイコンは `/api/users/{id}/icon` の API ルート(Task 1 で `/api` 配下)なので、
+>    静的ハンドラにも `VerifyAssets` の照合対象にも到達しない
+>
+> したがって Step 4 で生成されるのは **`/index.html` / `/assets/*.js` / `/assets/*.css` /
+> `/favicon.svg` の4件前後だけ**である。ここにアイコンが混ざっていたら、
+> `webapp/public` に置いてはいけないファイルが紛れ込んでいる。
+>
+> **一覧画面の `<img src="/api/users/:id/icon">` はページロードでは取得されない**点にも
+> 注意。ベンチは JS を実行しないので、`ProcessHTML` が見るのは `webapp/public/index.html`
+> の静的なタグだけであり、SPA が描画するアイコンはそこに現れない。アイコンへの負荷は
+> 4-C が `watcherIteration` に入れた `GetUserIcon` が担い続ける(`bench/load.go`)。
 
 - [ ] **Step 1: マニフェスト生成器を書く**
 
@@ -1949,6 +2178,20 @@ git commit -m "feat: ビルド成果物をコミットしアセットマニフ�
   - `func (c *Client) GetPage(ctx context.Context) (*PageLoad, error)`
   - `func VerifyAssets(m *Manifest, pl *PageLoad) error`(純粋関数。Task 8 も使う)
 
+> **改訂(2026-08-31): コードの変更なし。** 現物と照合して次を確認済み。
+>
+> - `bench/client.go` は `bytes` / `io` / `net/http` / `fmt` を既に import している。
+>   Step 1 の追加で新しい import は要らない
+> - isucandar の API は Step 1 のコードのとおり(module cache 実物で確認):
+>   `(*agent.Agent).GET(target string) (*http.Request, error)`、
+>   `ProcessHTML(ctx, *http.Response, io.ReadCloser) (Resources, error)`、
+>   `Resources = map[string]*Resource`、`Resource{InitiatorType, Request, Response, Error}`
+> - `processHTMLLink` は `rel` が `stylesheet` / `icon` / `shortcut icon` /
+>   `apple-touch-icon` / `manifest` / `modulepreload` のときだけ辿る。Vite が出す
+>   `<link rel="icon" href="/favicon.svg">` と `<link rel="stylesheet">` は両方とも対象なので、
+>   マニフェストの4件は `/index.html` を除いて全部 `ProcessHTML` から辿れる
+> - Step 6 の挿入先で Prepare が持っているクライアント変数は `c` で正しい
+
 - [ ] **Step 1: ページロードのクライアント処理を書く**
 
 `bench/client.go` の末尾に追加する。`bytes` の import を足すこと(既にある)。
@@ -2244,7 +2487,17 @@ Expected: 全 PASS
 	}
 ```
 
-`c` は Prepare が既に持っているクライアント変数に合わせること(実コードを読んで確認する)。
+挿入位置は、`lang == ""` のチェックの直後・`// 2. 初期データの検証` の手前である。
+`c` は Prepare が既に持っているクライアント変数で、そのまま使える(確認済み)。
+
+**時間予算に注意する。** `base := time.Now().UTC()` は `Initialize` の応答直後に採られ、
+その後の `ValidateSnapshotAuctionDetail` はスナップショットの `status` と厳密比較するため、
+**live サンプルが Prepare 中に期限を迎えて closed になると正しいアプリでも落ちる**
+(最短は auction 1021 の +21秒。`bench/scenario.go` のコメント参照)。ここへ入れる
+ページロードはその21秒を削る側に働く。バンドルは 300KB 未満・localhost 越しなので
+実測では数十msに収まるはずだが、**Task 9 の G5(Prepare 3回連続・6秒基準)で
+所要時間を必ず記録し、4-B / 4-C 時点の 1.79〜1.81秒からどれだけ増えたかを見ること。**
+1秒以上増えているなら挿入位置(Prepare の末尾へ移す)を再検討する。
 
 - [ ] **Step 7: 実スタックで Prepare を通す**
 
@@ -2267,23 +2520,49 @@ git commit -m "feat: Prepare でアセットのハッシュを照合する"
 ### Task 8: Load に訪問者 worker を足す
 
 **Files:**
-- Modify: `bench/score.go`, `bench/scenario.go`, `bench/load.go`, `bench/main.go`, `README.md`
+- Modify: `bench/score.go`, `bench/liveness.go`, `bench/liveness_test.go`, `bench/scenario.go`, `bench/load.go`, `bench/main.go`, `README.md`
 
 **Interfaces:**
 - Consumes: Task 7 の `GetPage` / `VerifyAssets` / `s.Assets`
-- Produces: `ScoreGETPage` タグと `-visitors` フラグ
+- Produces: `ScoreGETPage` タグと `-visitors` フラグ。`workerCounts` に `Visitors` フィールド
+
+> **改訂(2026-08-31): このタスクは4-E1 の着地で最も大きく変わった。** 元との差分:
+>
+> - **採点タグの登録先が3箇所になった。** 執筆時点ではスコア内訳が `bench/main.go` に
+>   直書きされていたので `bench/score.go` だけを直せばよかった。4-E1 で
+>   **`bench/liveness.go`** が新設され、`scoredTags`(内訳出力と liveness 判定が使う
+>   順序付き一覧)と `livenessRequired`(そのタグに floor を課すかをワーカー数から決める)
+>   への登録が必須になった。**片方を忘れると `bench` の単体テストが落ちる**
+>   (`TestScoredTagsCoversScoreTable` / `TestLivenessRequiredCoversAllTags`)
+> - **`workerCounts` に `Visitors` を足す必要が生じた。** これに伴い
+>   `bench/liveness_test.go` の既存フィクスチャの更新も要る(Step 4)。ここを飛ばすと
+>   実装が正しくてもテストが落ちる
+> - **`Load` の worker 起動は `wg.Add(4)` ではなくなっていた。** 4-E1 が
+>   「ワーカー数0以下なら `Process` を呼ばない」ガード(持ち越し23)を入れた際、
+>   `start(n, w)` ヘルパー + `wg.Add(1)` の形に書き換わっている。
+>   元の「`wg.Add(4)` を `wg.Add(5)` に変える」という手順は現物に存在しない
+> - **`GetAuctions` のシグネチャが変わっていた**(4-B)。
+>   `GetAuctions(ctx) ([]AuctionSummary, error)` ではなく
+>   `GetAuctions(ctx, AuctionListParams) (*AuctionList, error)` である。
+>   元の `visitorIteration` のコードはコンパイルが通らない
 
 - [ ] **Step 1: スコアタグを足す**
 
-`bench/score.go`:
+`bench/score.go` の定数群の**末尾**に足す:
 
 ```go
-	ScoreGETPage          score.ScoreTag = "GET / (page load)"
+	ScoreGETPage          score.ScoreTag = "GET / (ページロード)"
 ```
-を定数群に足し、配点表に追加する:
+
+配点表の**末尾**に足す:
+
 ```go
 	ScoreGETPage:          1,
 ```
+
+**末尾に足す理由。** `bench/liveness.go` の `scoredTags` の並びがスコア内訳の出力順であり、
+`checkLiveness` が返す「floor を下回った一覧」の順でもある。末尾に足せば既存7本の
+出力順が動かず、`docs/phase4-notes.md` に残る 4-A〜4-E1 の実測ログと目で突き合わせられる。
 
 配点表の直前のコメントを次に差し替える:
 
@@ -2296,9 +2575,192 @@ git commit -m "feat: Prepare でアセットのハッシュを照合する"
 // 短くなり、他のスコアが伸びる」という正しい向きだけが残る。
 // (Phase 3 で ScoreGETFeed をポーリング1回ごとに加点し、遅いフィードほど高得点に
 //  なりかけた失敗と同型なので、同じ轍を踏まないこと)
+//
+// タグを足したら bench/liveness.go の scoredTags と livenessRequired にも必ず足すこと。
 ```
 
-- [ ] **Step 2: 訪問者シナリオを書く**
+**`errorPenalty` のコメント(同ファイル)は触らない。** 「スコア内訳7本の合計」という
+記述は 4-B ゲート3 の実測1本(当時7本だった)の再計算過程であって、現在のタグ本数の
+説明ではない。8本に書き換えると、参照している実測ログと合わなくなる。
+
+- [ ] **Step 2: `bench/liveness.go` に登録する(2箇所)**
+
+**このタスクで最も間違えやすい手順である。** 片方だけ足すと、`scoredTags` 側を忘れれば
+内訳の合計が `raw` と一致しなくなり、`livenessRequired` 側を忘れれば新エンドポイントが
+liveness 判定を黙ってすり抜ける。
+
+(a) `scoredTags` の**末尾**に1行足す:
+
+```go
+var scoredTags = []scoredTag{
+	{ScoreGETList, "GET /auctions"},
+	{ScoreGETSearch, "GET /auctions (検索)"},
+	{ScoreGETDetail, "GET /auctions/:id"},
+	{ScorePOSTBid, "POST /auctions/:id/bids"},
+	{ScoreGETFeed, "GET /auctions/:id/bids"},
+	{ScoreGETNotifications, "GET /notifications"},
+	{ScorePOSTAuction, "POST /auctions"},
+	{ScoreGETPage, "GET / (ページロード)"},
+}
+```
+
+(b) `workerCounts` に `Visitors` を足す:
+
+```go
+// workerCounts は Load を駆動するワーカー数。liveness floor の条件付けに使う。
+type workerCounts struct {
+	Bidders   int
+	Watchers  int
+	Notifiers int
+	Sellers   int
+	Visitors  int
+}
+```
+
+(c) `livenessRequired` に `ScoreGETPage` を足し、**一覧と詳細の条件に visitor を加える**:
+
+```go
+func livenessRequired(tag score.ScoreTag, w workerCounts) bool {
+	switch tag {
+	case ScoreGETList, ScoreGETDetail:
+		// bidder も watcher も visitor も、一覧を引いてから詳細を開く
+		return w.Bidders > 0 || w.Watchers > 0 || w.Visitors > 0
+	case ScoreGETSearch:
+		// 検索付きの一覧を叩くのは watcher だけ
+		return w.Watchers > 0
+	case ScorePOSTBid, ScoreGETFeed:
+		// 入札とフィード追従は bidder だけ
+		return w.Bidders > 0
+	case ScoreGETNotifications:
+		return w.Notifiers > 0
+	case ScorePOSTAuction:
+		return w.Sellers > 0
+	case ScoreGETPage:
+		// ページロードを行うのは visitor だけ
+		return w.Visitors > 0
+	}
+	return false
+}
+```
+
+`ScoreGETList` / `ScoreGETDetail` の条件に `w.Visitors > 0` を足すのは、Step 5 の
+`visitorIteration` がこの2本を実際に加点するからである。`livenessRequired` の条件は
+「そのタグを叩くワーカーが1つでも生きているか」を表すという既存のコメントの契約
+(`bench/load.go` の各 `*Iteration` が実際に呼ぶエンドポイントから導く)に従う。
+これを足しておかないと、`-bidders 0 -watchers 0 -visitors 4` のデバッグ走行で
+一覧と詳細に floor が課されなくなる。
+
+- [ ] **Step 3: 登録漏れが実際に検出されることを確認する**
+
+**登録漏れを2回わざと作り、テストが落ちることを目で見ること。** この2本のテストが
+本タスクの安全網そのものであり、効いていることを実証してから先へ進む。
+
+判定コマンドは共通:
+```bash
+cd bench && go test -count=1 -run 'TestScoredTagsCoversScoreTable|TestLivenessRequiredCoversAllTags' ./...
+```
+
+**実験1(`scoredTags` の足し忘れ)**: Step 1 だけを済ませ、Step 2 をまだ入れていない状態
+(= `scoreTable` に8本、`scoredTags` に7本)で流す。
+Expected: `TestScoredTagsCoversScoreTable` が
+「scoredTags 7件 と scoreTable 8件 が不一致」で FAIL。
+
+**実験2(`livenessRequired` の足し忘れ)**: Step 2 の (a) と (b) を入れ、
+**(c) の `case ScoreGETPage:` だけを入れない**状態で流す((c) の他の変更は入れてよい)。
+Expected: `TestLivenessRequiredCoversAllTags` が
+「"GET / (ページロード)" に floor が課されていない」で FAIL。
+
+((b) の `workerCounts.Visitors` を入れないと (c) がコンパイルできないので、
+実験2 では (b) まで入れる。)
+
+両方の出力を報告に記録し、そのうえで (a)(b)(c) をすべて入れた状態に戻す。
+
+- [ ] **Step 4: `bench/liveness_test.go` のフィクスチャを更新する**
+
+`workerCounts` にフィールドが増えたので、既存テストの**ワーカー全部入りリテラルに
+`Visitors` を足さないと、実装が正しくてもテストが落ちる。**
+
+(a) `TestLivenessRequiredCoversAllTags` の `all`:
+
+```go
+	all := workerCounts{Bidders: 1, Watchers: 1, Notifiers: 1, Sellers: 1, Visitors: 1}
+```
+
+(b) `TestLivenessRequiredRespectsWorkerCounts` に `-visitors 0` のケースを足す
+(`noWatchers` のブロックの直後、`none` の手前):
+
+```go
+	noVisitors := workerCounts{Bidders: 1, Watchers: 1, Notifiers: 1, Sellers: 1, Visitors: 0}
+	if livenessRequired(ScoreGETPage, noVisitors) {
+		t.Error("visitors=0 なのに GET / (ページロード) に floor が課されている")
+	}
+	// 一覧と詳細は bidder / watcher も叩くので、visitor を止めても課され続ける
+	if !livenessRequired(ScoreGETList, noVisitors) {
+		t.Error("bidders=1 なのに GET /auctions に floor が課されていない")
+	}
+
+	onlyVisitors := workerCounts{Visitors: 1}
+	if !livenessRequired(ScoreGETPage, onlyVisitors) {
+		t.Error("visitors=1 なのに GET / (ページロード) に floor が課されていない")
+	}
+	if !livenessRequired(ScoreGETList, onlyVisitors) {
+		t.Error("visitors=1 なのに GET /auctions に floor が課されていない")
+	}
+	if livenessRequired(ScorePOSTBid, onlyVisitors) {
+		t.Error("bidders=0 なのに POST /auctions/:id/bids に floor が課されている")
+	}
+```
+
+`noSellers` / `noBidders` / `noWatchers` の既存リテラルは `Visitors` を省いたまま
+(= 0)でよい。それらが検査しているのは `ScoreGETPage` 以外のタグであり、
+`ScoreGETList` / `ScoreGETDetail` は Bidders か Watchers で既に true になるため、
+既存のアサーションはそのまま成立する。`none := workerCounts{}` のループも
+`ScoreGETPage` が `Visitors == 0` で false を返すのでそのまま通る。
+
+(c) `TestCheckLiveness` の `all` に `Visitors` を足し、`partial` を8本に増やす:
+
+```go
+	all := workerCounts{Bidders: 8, Watchers: 4, Notifiers: 2, Sellers: 2, Visitors: 2}
+```
+
+`all` に `Visitors: 2` を足さないと、`belowFloor` のケースで `ScoreGETPage` だけが
+floor 判定の対象外になり、`len(dead) != len(scoredTags)` で FAIL する。
+
+`partial`(「一覧経路が全滅し、通知と出品だけ生きている」形)にも `ScoreGETPage: 0` を
+足す。ページロードは `GET /` と一覧の両方を含むので、一覧経路が全滅した走行では
+ページロードも死んでいるのが自然である:
+
+```go
+	partial := map[score.ScoreTag]int64{
+		ScoreGETList:          0,
+		ScoreGETSearch:        0,
+		ScoreGETDetail:        0,
+		ScorePOSTBid:          0,
+		ScoreGETFeed:          0,
+		ScoreGETNotifications: 513,
+		ScorePOSTAuction:      493,
+		ScoreGETPage:          0,
+	}
+	dead := checkLiveness(partial, 6, all)
+	if len(dead) != 6 {
+		t.Fatalf("下回ったのが %d件, want 6件: %+v", len(dead), dead)
+	}
+	// 返る順序は scoredTags の順であること(出力の安定性のため)
+	wantOrder := []score.ScoreTag{
+		ScoreGETList, ScoreGETSearch, ScoreGETDetail, ScorePOSTBid, ScoreGETFeed, ScoreGETPage,
+	}
+```
+
+`healthy` / `atFloor` / `belowFloor` / `zeroSeller` は `scoredTags` を回して作っているので、
+新タグを自動的に含む。書き換え不要。
+
+Run:
+```bash
+cd bench && go test -count=1 -run 'Liveness|ScoredTags' ./...
+```
+Expected: 全 PASS
+
+- [ ] **Step 5: 訪問者シナリオを書く**
 
 `bench/load.go` の末尾に追加:
 
@@ -2307,9 +2769,13 @@ git commit -m "feat: Prepare でアセットのハッシュを照合する"
 // ページロード(HTML と全アセットの取得・照合)を1回行い、そのあとログインせずに
 // 一覧と詳細を1つずつ見る。
 //
-// ログインしないのは意図的である。GET /auctions は未ログインでも見られるので、
+// ログインしないのは意図的である。GET /api/auctions は未ログインでも見られるので、
 // この worker が bcrypt(コスト12)を毎回踏むと、測っているものが静的配信ではなく
 // ログイン処理になってしまう。
+//
+// イテレーションごとに新しい Client を作る = 毎回キャッシュが空の新規訪問者である。
+// 参加者がキャッシュヘッダを付けても初回訪問は必ず実配信になるので、
+// 静的配信の負荷が走行から消えることはない。
 func (s *Scenario) visitorIteration(ctx context.Context, step *isucandar.BenchmarkStep) {
 	c, err := NewClient(s.Target)
 	if err != nil {
@@ -2321,18 +2787,29 @@ func (s *Scenario) visitorIteration(ctx context.Context, step *isucandar.Benchma
 		addErr(ctx, step, ErrApplication, err)
 		return
 	}
+	// 注意: ここは ErrApplication であって ErrCritical ではない。
+	// 静的配信はアプリプロセスと運命を共にするため、一過性の5xxで走行を即死
+	// させてはいけない(設計文書のエラー分類の項を参照)。恒常的に壊れたビルドは
+	// Prepare 側の VerifyAssets / liveness floor / エラー予算の三重で捕まる。
 	if err := VerifyAssets(s.Assets, pl); err != nil {
-		addErr(ctx, step, ErrCritical, err)
+		addErr(ctx, step, ErrApplication, err)
 		return
 	}
+	// ページロード1回につき1点。アセット1本ごとには加点しない(score.go のコメント参照)。
 	step.AddScore(ScoreGETPage)
 
-	list, err := c.GetAuctions(ctx)
+	// 入札者と同じく「終了が最も近い20件」= 1ページ目を見る。
+	l, err := c.GetAuctions(ctx, AuctionListParams{Page: 1})
 	if err != nil {
 		addErr(ctx, step, ErrApplication, err)
 		return
 	}
 	step.AddScore(ScoreGETList)
+	if err := ValidatePagedListShape(1, l); err != nil {
+		addErr(ctx, step, ErrCritical, err)
+		return
+	}
+	list := l.Auctions
 	if len(list) == 0 {
 		addErr(ctx, step, ErrCritical, fmt.Errorf("GET /api/auctions: 開催中オークションが0件"))
 		return
@@ -2345,10 +2822,14 @@ func (s *Scenario) visitorIteration(ctx context.Context, step *isucandar.Benchma
 }
 ```
 
-- [ ] **Step 3: worker を Load に足す**
+新しい import は不要である(`fmt` / `math/rand` / `context` / `isucandar` は
+`bench/load.go` に既にある)。
 
-`bench/scenario.go` の `Scenario` 構造体に `Visitors int` を足す。`Load` の中、
-`seller` worker を作った直後に足す:
+- [ ] **Step 6: worker を Load に足す**
+
+`bench/scenario.go` の `Scenario` 構造体に `Visitors int` を足す(`Sellers` の直後)。
+
+`Load` の中、`seller` worker を作った直後に足す:
 
 ```go
 	visitor, err := worker.NewWorker(func(ctx context.Context, _ int) {
@@ -2359,26 +2840,53 @@ func (s *Scenario) visitorIteration(ctx context.Context, step *isucandar.Benchma
 	}
 ```
 
-`wg.Add(4)` を `wg.Add(5)` に変え、起動を1つ足す:
+起動は `start` ヘルパー(4-E1 が入れた「ワーカー数0以下なら `Process` を呼ばない」ガード)を
+使う。`start(s.Sellers, seller)` の直後に1行:
+
 ```go
-	go func() { defer wg.Done(); visitor.Process(ctx) }()
+	start(s.Visitors, visitor)
 ```
 
-`Load` 先頭のコメントも「5種の worker」に直す。
+**`wg.Add(5)` のような書き方をしないこと。** `start` が内部で `wg.Add(1)` しており、
+`n <= 0` のときは何もしない。ここを素の `go func(){ visitor.Process(ctx) }()` に戻すと、
+`-visitors 0` が「ワーカーを止める」ではなく「無限ループ・無制限並列」になって
+走行が全滅する(`docs/phase4-notes.md` 持ち越し23。isucandar の
+`parallel.isLimitKept` が `limit < 1` を「上限なし」と解釈するため)。
 
-- [ ] **Step 4: フラグを足す**
+`Load` 先頭のコメントを「4種の worker」から次に直す:
 
-`bench/main.go`:
+```go
+// Load は入札者(bidderIteration)・ウォッチャー(watcherIteration)・
+// 通知閲覧者(notifierIteration)・出品者(sellerIteration)・
+// 訪問者(visitorIteration)の5種の worker を
+// 無限ループで並行実行し、ctx(WithLoadTimeout)がキャンセルされるまで走らせる。
+```
+
+- [ ] **Step 7: フラグと `workerCounts` を足す**
+
+`bench/main.go` のフラグの並びに(`sellers` の直後):
 ```go
 	visitors := flag.Int("visitors", 2, "ページロードを行う閲覧者worker数")
 ```
-を他のフラグの並びに足し、`Scenario` の初期化に `Visitors: *visitors,` を足す。
+
+`Scenario` の初期化に `Visitors: *visitors,` を足す。
+
+**`workerCounts` の組み立てにも足す**(足し忘れると `livenessRequired(ScoreGETPage, ...)` が
+常に false になり、ページロードが liveness 判定を黙ってすり抜ける。ここはテストが
+守っていないので手で確認すること):
+
+```go
+	workers := workerCounts{
+		Bidders: *bidders, Watchers: *watchers, Notifiers: *notifiers, Sellers: *sellers,
+		Visitors: *visitors,
+	}
+```
 
 既定を 2 にする根拠: 1イテレーションでバンドル全体(300KB未満)を1回転送する。
 入札者8・ウォッチャー4に対して2なら、静的配信の負荷は走行に確実に乗るが支配的にはならない。
 実際の重みは Task 9 の G4 で確認する。
 
-- [ ] **Step 5: `s.Assets` が Load 開始時に必ず入っていることを確認する**
+- [ ] **Step 8: `s.Assets` が Load 開始時に必ず入っていることを確認する**
 
 `Prepare` が `s.Assets` を設定する(Task 7 Step 6)。`-prepare-only` でない通常走行では
 Prepare → Load の順に実行されるので nil にはならない。ただし将来 Prepare の順序が
@@ -2391,19 +2899,43 @@ Prepare → Load の順に実行されるので nil にはならない。ただ�
 	}
 ```
 
-- [ ] **Step 6: 通常走行を確認する**
+- [ ] **Step 9: 通常走行を確認する**
 
 Run:
 ```bash
 docker compose -f dev/compose.yaml up -d --build
-cd bench && go run . -target http://localhost:8080 -duration 60s -snapshot ../initial-data/out/snapshot.json
+cd bench && go test -count=1 ./... && go vet ./...
+go run . -target http://localhost:8080 -duration 60s -snapshot ../initial-data/out/snapshot.json
 ```
-Expected: `RESULT: PASS`、critical 0件、breakdown に `GET / (page load)` の行が出る。
-実測値を報告に記録する。
+Expected:
+- 単体テスト全 PASS
+- breakdown が **8行**になり、末尾に `GET / (ページロード)` の行が出る
+- **`LIVENESS: PASS (floor 6回、判定対象8/8本すべて到達)`**。`7/7` のままなら
+  `livenessRequired` か `workerCounts` への `Visitors` の追加が漏れている
+- 内訳の合計が `raw` と一致する(各行 `count × weight == points`、全行の合計 `== raw`)
+- `RESULT: PASS`、critical 0件
 
-- [ ] **Step 7: README にフラグを追記してコミット**
+実測値を報告に記録する。`GET / (ページロード)` の回数が floor(6回)に近い場合は、
+`-visitors` の既定値かページロードの所要時間に問題があるので、そのまま Task 9 の
+G4 へ持ち込まずに原因を調べること。
+
+- [ ] **Step 10: `-visitors 0` で誤検知しないことを確認する**
+
+`livenessRequired` の条件付けが効いていることの実証。
+
+Run:
+```bash
+cd bench && go run . -target http://localhost:8080 -duration 30s -visitors 0 \
+  -snapshot ../initial-data/out/snapshot.json | grep -E 'LIVENESS|RESULT|ページロード'
+```
+Expected: `GET / (ページロード)` が 0回でも `LIVENESS: PASS (floor 3回、判定対象7/8本すべて到達)`、
+`RESULT: PASS`。ここが FAIL するなら `livenessRequired` の条件が間違っている。
+
+- [ ] **Step 11: README にフラグを追記してコミット**
 
 `README.md` のベンチのフラグ一覧に `-visitors`(既定2)を足す。
+既存の記述(「worker 数を変える(既定: bidders 8 / watchers 4 / notifiers 2 / sellers 2)」)にも
+`visitors 2` を加える。
 
 ```bash
 git add bench README.md
@@ -2423,16 +2955,64 @@ git commit -m "feat: Load に訪問者workerを足し静的配信の負荷を走
 **このタスクは計測である。** 数値を作らず、観測したものだけを記録すること。
 **`webapp/`・`bench/`・`webapp/frontend/` を変更しない**(ゲートのための一時的な破壊は必ず元に戻す)。
 
-- [ ] **Step 1: G1 — 通常走行**
+> **改訂(2026-08-31):** ゲート表を設計 §10 に合わせた。元との差分:
+>
+> - **G1 の判定手順が変わった(4-E1)。** 「採点対象すべてが0回でないことを目視で
+>   明示的に確認する」という旧手順は、**`LIVENESS: PASS` の行を確認する**ことに
+>   置き換わっている(`docs/phase4-notes.md` の「ゲート3の手順(4-E1 で差し替え)」)。
+>   目視の脱落が 4-A の見逃しを生んだので、判定はベンチ側に持たせ、人間は出力行を読むだけにする
+> - **G5(Prepare 3回連続、6秒基準)が増えた。** 元の計画には無かった
+>
+> | ゲート | 内容 | 期待 |
+> |---|---|---|
+> | G1 | 通常の 60 秒走行 | **`LIVENESS: PASS`**、`RESULT: PASS`、critical 0 件 |
+> | G2 | `webapp/public/assets/*.js` を1バイト書き換える | Prepare が critical で FAIL |
+> | G3 | `index.html` から `<script>` タグを消す | critical で FAIL |
+> | G4 | nginx に `location /assets/ { root ...; gzip on; expires 1h; }` を足す | PASS のまま、**スコアが上がる** |
+> | G5 | Prepare 3回連続 | `PREPARE: PASS`、6秒基準内 |
+
+- [ ] **Step 1: G5 — Prepare 3回連続(6秒基準)**
+
+番号は設計 §10 の表に合わせているが、**実行はこれを最初にする。** 最も安く、
+Task 7 で Prepare に足したアセット検証が時間予算を壊していないかを先に確かめられるためである
+(Task 7 Step 6 の「時間予算に注意する」を参照)。
+
+Run:
+```bash
+docker compose -f dev/compose.yaml up -d --build
+cd bench && for i in 1 2 3; do
+  /usr/bin/time -p go run . -target http://localhost:8080 -prepare-only
+done
+```
+Expected: 3回とも `PREPARE: PASS`、`ERR:` 行なし、所要時間が**6秒基準内**。
+
+3回分の所要時間をすべて記録し、**4-C 時点の実測 1.79〜1.81秒と比較する。**
+1秒以上増えているなら、アセット検証の挿入位置を Prepare の末尾へ移すことを検討し、
+その判断も記録する。6秒を超えたらこのゲートは FAIL であり、先へ進めてはならない。
+
+- [ ] **Step 2: G1 — 通常走行**
 
 Run:
 ```bash
 docker compose -f dev/compose.yaml up -d --build
 cd bench && go run . -target http://localhost:8080 -duration 60s -snapshot ../initial-data/out/snapshot.json
 ```
-Expected: `RESULT: PASS`、critical 0件。`SCORE` と breakdown 全体を記録する
 
-- [ ] **Step 2: G2 — アセットを1バイト壊すと FAIL する**
+判定は `docs/phase4-notes.md` の「ゲート3の手順(4-E1 で差し替え)」に従う。
+**目視で「採点対象が0回でない」を数えない。**
+
+1. **`LIVENESS: PASS` 行が出ていることを確認する。** 出ていなければ、続く行が
+   floor を下回った採点対象を名指ししている
+2. 判定対象の本数が **`8/8`** であることを確認する。`7/8` なら
+   `livenessRequired` か `bench/main.go` の `workerCounts` への `Visitors` 追加が漏れている
+   (Task 8 Step 2 / Step 7)
+3. `RESULT: PASS` と `critical: 0件` を確認する
+4. スコア内訳を検算する(各行 `count × weight == points`、全行の合計 `== raw`、
+   `SCORE == raw − penalty`)。**内訳は8行**で、末尾が `GET / (ページロード)` である
+
+`SCORE` と breakdown 全体をそのまま貼って記録する。
+
+- [ ] **Step 3: G2 — アセットを1バイト壊すと FAIL する**
 
 Run:
 ```bash
@@ -2454,7 +3034,7 @@ cd bench && go run . -target http://localhost:8080 -prepare-only
 ```
 Expected: `git diff` が空、`PREPARE: PASS`
 
-- [ ] **Step 3: G3 — `<script>` の参照を消すと FAIL する**
+- [ ] **Step 4: G3 — `<script>` の参照を消すと FAIL する**
 
 Run:
 ```bash
@@ -2475,7 +3055,7 @@ cd bench && go run . -target http://localhost:8080 -prepare-only
 ```
 Expected: `git diff` が空、`PREPARE: PASS`
 
-- [ ] **Step 4: G4 の前提を確認する — nginx から public が見えること**
+- [ ] **Step 5: G4 の前提を確認する — nginx から public が見えること**
 
 Task 3 で `dev/compose.yaml` の `nginx` サービスに `../webapp/public:/webapp/public:ro` を
 マウント済みのはずである。入っていなければここで足す(`dev/nginx.conf` は変更しない)。
@@ -2488,18 +3068,18 @@ cd bench && go run . -target http://localhost:8080 -prepare-only
 ```
 Expected: アセットが見える、`PREPARE: PASS`(挙動は変わっていない)
 
-- [ ] **Step 5: G4 — 変更前のスコアを3回測る**
+- [ ] **Step 6: G4 — 変更前のスコアを3回測る**
 
 Run:
 ```bash
 cd bench && for i in 1 2 3; do
   go run . -target http://localhost:8080 -duration 60s \
-    -snapshot ../initial-data/out/snapshot.json | grep -E 'SCORE|RESULT'
+    -snapshot ../initial-data/out/snapshot.json | grep -E 'SCORE|RESULT|LIVENESS'
 done
 ```
-3回分の `SCORE` と `RESULT` をすべて記録する。
+3回分の `SCORE` / `LIVENESS` / `RESULT` をすべて記録する。
 
-- [ ] **Step 6: G4 — nginx 直配信に変えて3回測る**
+- [ ] **Step 7: G4 — nginx 直配信に変えて3回測る**
 
 `dev/nginx.conf` を一時的に次に差し替える(**計測後に必ず戻す**):
 
@@ -2535,13 +3115,17 @@ docker compose -f dev/compose.yaml restart nginx
 curl -s -D- -o /dev/null -H 'Accept-Encoding: gzip' "http://localhost:8080/$(cd webapp/public && ls assets/*.js | head -1)" | head -12
 cd bench && for i in 1 2 3; do
   go run . -target http://localhost:8080 -duration 60s \
-    -snapshot ../initial-data/out/snapshot.json | grep -E 'SCORE|RESULT'
+    -snapshot ../initial-data/out/snapshot.json | grep -E 'SCORE|RESULT|LIVENESS'
 done
 ```
-Expected: アセットが `Content-Encoding: gzip` と `Expires` 付きで返る。3回とも `RESULT: PASS`
+Expected: アセットが `Content-Encoding: gzip` と `Expires` 付きで返る。3回とも
+`LIVENESS: PASS` と `RESULT: PASS`
 (**304 も gzip も受理する設計なので、ここで FAIL したらそれは設計の欠陥である。取り繕わず記録すること**)
 
-- [ ] **Step 7: G4 の判定**
+`GET / (ページロード)` の回数が変更前より減っていないことも確認する。減っているなら、
+304 の扱いか `VerifyAssets` の受理条件に問題がある。
+
+- [ ] **Step 8: G4 の判定**
 
 判定基準: **変更後3回の中央値が、変更前3回の(最大値 − 最小値)の幅を超えて改善していること。**
 このマシンは同一セッション内でもスコアが約7〜12%振れるため、この幅を超えない改善は
@@ -2551,7 +3135,7 @@ Expected: アセットが `Content-Encoding: gzip` と `Expires` 付きで返る
 (`-visitors` の既定値、バンドルサイズ)が足りていない可能性として 4-E へ送る。
 **数値を都合よく解釈しないこと。**
 
-- [ ] **Step 8: nginx.conf を戻す**
+- [ ] **Step 9: nginx.conf を戻す**
 
 Run:
 ```bash
@@ -2562,7 +3146,7 @@ cd bench && go run . -target http://localhost:8080 -prepare-only
 ```
 Expected: `git diff` が空、`PREPARE: PASS`
 
-- [ ] **Step 9: `docs/phase4-notes.md` に 4-D の節を足す**
+- [ ] **Step 10: `docs/phase4-notes.md` に 4-D の節を足す**
 
 既存の内容の末尾に追記する(4-A の節は消さない)。`<...>` は実際に観測した値で埋める。
 
@@ -2584,15 +3168,29 @@ Expected: `git diff` が空、`PREPARE: PASS`
   「index.html が text/html」「アセットが text/html でない」だけを見る
   (`application/javascript` と `text/javascript` の食い違いで false-FAIL しないため)
 - **マニフェストはベンチに `go:embed`**: 参加者が差し替えられないことが検証の前提
+- **ユーザーアイコンはマニフェストの照合対象にしない**: 内容が DB 由来であり、
+  `/api/users/:id/icon` は API ルートなので静的ハンドラにもマニフェスト
+  (`webapp/public` を歩いて作る)にも載らない。4-C が「アイコンはコストであって
+  報酬ではない」として採点タグを作っていないのと二重にならないようにした
+- **`ScoreGETPage` を `scoredTags` と `livenessRequired` の両方に登録した**(4-E1 の契約):
+  前者を忘れると内訳の合計が `raw` と一致しなくなり、後者を忘れるとページロードが
+  liveness 判定を黙ってすり抜ける。`livenessRequired` では
+  `ScoreGETList` / `ScoreGETDetail` の条件にも `Visitors > 0` を加えた
+  (訪問者 worker がこの2本も加点するため)
+- **一覧画面の検索条件とページ番号を `useSearchParams` で URL に載せた**:
+  コンポーネント内の状態に留めるとリロードと「戻る」が壊れ、共有リンクが再現しない
+- **カテゴリ3件はフロントにハードコードした**: `/initialize` が必ず同じ3件へ戻す固定値であり、
+  `GET /api/categories` を足すとベンチ検証も足す必要が出る
 
 ### 受け入れゲートの実測(<日付>)
 
 | ゲート | 内容 | 結果 |
 |---|---|---|
-| G1 | 通常の60秒走行 | <...> |
+| G1 | 通常の60秒走行 | <`LIVENESS: PASS` / `RESULT: PASS` / critical件数 / 判定対象8/8> |
 | G2 | アセットを1バイト改変 | <...> |
 | G3 | index.html から script を除去 | <...> |
 | G4 | nginx 直配信 + gzip | <...> |
+| G5 | Prepare 3回連続(6秒基準) | <3回分の所要時間。4-C 時点の 1.79〜1.81秒との比較> |
 
 ### G4 の生データ
 
@@ -2602,10 +3200,14 @@ Expected: `git diff` が空、`PREPARE: PASS`
 
 ### 4-E / 4-F への持ち越し
 
-<...>
+- **採点タグの表示名に `/api` を反映するかは 4-F で決める。** `bench/score.go` の
+  タグ文字列と `bench/liveness.go` の `scoredTags` の表示名は本フェーズで触っていない。
+  必ず対で直す必要があり、直すと本ファイルに残る 4-A〜4-E1 の実測ログとの文字列突合が
+  壊れるため、レギュレーション文書を書くときに他の表記と一緒に判断する
+- <その他、実測から出たもの>
 ```
 
-- [ ] **Step 10: 最終確認**
+- [ ] **Step 11: 最終確認**
 
 Run:
 ```bash
@@ -2616,9 +3218,15 @@ cd .. && gofmt -l webapp/go bench initial-data
 git status --short
 ```
 Expected: すべて PASS、`gofmt -l` は無出力、作業ツリーは `docs/phase4-notes.md` 以外クリーン
-(`dev/nginx.conf` が Step 8 で戻っていること、`webapp/public` に差分が無いことを特に確認する)
+(`dev/nginx.conf` が Step 9 で戻っていること、`webapp/public` に差分が無いことを特に確認する)
 
-- [ ] **Step 11: コミット**
+`bench` の単体テストには `TestScoredTagsCoversScoreTable` /
+`TestLivenessRequiredCoversAllTags` / `TestCheckLiveness` /
+`TestManifestMatchesPublicDir` / `TestVerifyAssets*` が含まれる。
+ここが全部 PASS していることが、Task 8 の2箇所登録と Task 6 のマニフェスト同期の
+最終確認になっている。
+
+- [ ] **Step 12: コミット**
 
 ```bash
 git add docs/phase4-notes.md

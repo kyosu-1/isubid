@@ -22,9 +22,11 @@ services:
       ISUBID_DB_HOST: mysql
       ISUBID_SQL_DIR: /webapp/sql
       ISUBID_INITIAL_DATA_DIR: /initial-data
+      ISUBID_PUBLIC_DIR: /webapp/public
     volumes:
       - ../webapp/sql:/webapp/sql:ro
       - ../initial-data/out:/initial-data:ro
+      - ../webapp/public:/webapp/public:ro
     depends_on:
       mysql:
         condition: service_healthy
@@ -35,6 +37,7 @@ services:
       - "8080:80"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../webapp/public:/webapp/public:ro
     depends_on:
       - app
 

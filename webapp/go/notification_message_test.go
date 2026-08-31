@@ -66,7 +66,7 @@ func TestLongTitleAuctionDoesNotOverflowNotificationMessage(t *testing.T) {
 
 	longTitle := strings.Repeat("椅", 255) // postAuction が許す最大長ちょうど
 	seller := loginSeedUser(t, ts.URL, "seed_user_01")
-	res, err := seller.Post(ts.URL+"/auctions", "application/json", strings.NewReader(
+	res, err := seller.Post(ts.URL+"/api/auctions", "application/json", strings.NewReader(
 		fmt.Sprintf(`{"title":"%s","description":"d","category_id":1,"starting_price":1000,"duration_seconds":30}`, longTitle)))
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +82,7 @@ func TestLongTitleAuctionDoesNotOverflowNotificationMessage(t *testing.T) {
 
 	// 1件目の入札: 先行入札者がいないのでoutbidファンアウトは発生しない。
 	bidder1 := loginSeedUser(t, ts.URL, "seed_user_02")
-	res1 := postJSON(t, bidder1, fmt.Sprintf("%s/auctions/%d/bids", ts.URL, created.ID), `{"amount":1100}`)
+	res1 := postJSON(t, bidder1, fmt.Sprintf("%s/api/auctions/%d/bids", ts.URL, created.ID), `{"amount":1100}`)
 	defer res1.Body.Close()
 	if res1.StatusCode != http.StatusCreated {
 		t.Fatalf("1件目の入札 status = %d, want 201", res1.StatusCode)
@@ -91,7 +91,7 @@ func TestLongTitleAuctionDoesNotOverflowNotificationMessage(t *testing.T) {
 	// 2件目の入札: seed_user_02へoutbid通知が飛ぶ。この経路が長いタイトルでmessageを
 	// INSERTする(修正前はここで500になる)。
 	bidder2 := loginSeedUser(t, ts.URL, "seed_user_03")
-	res2 := postJSON(t, bidder2, fmt.Sprintf("%s/auctions/%d/bids", ts.URL, created.ID), `{"amount":1200}`)
+	res2 := postJSON(t, bidder2, fmt.Sprintf("%s/api/auctions/%d/bids", ts.URL, created.ID), `{"amount":1200}`)
 	defer res2.Body.Close()
 	if res2.StatusCode != http.StatusCreated {
 		t.Fatalf("2件目の入札(outbid通知を誘発) status = %d, want 201", res2.StatusCode)

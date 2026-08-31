@@ -56,7 +56,7 @@ type auctionListJSON struct {
 func getAuctionList(t *testing.T, tsURL, query string) auctionListJSON {
 	t.Helper()
 	var l auctionListJSON
-	getJSON(t, tsURL+"/auctions"+query, &l)
+	getJSON(t, tsURL+"/api/auctions"+query, &l)
 	return l
 }
 
@@ -113,7 +113,7 @@ func TestGetAuctionDetail(t *testing.T) {
 	ts := newTestServer(t)
 	initApp(t, ts)
 
-	res, err := http.Get(ts.URL + "/auctions/1")
+	res, err := http.Get(ts.URL + "/api/auctions/1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestGetAuctionNotFound(t *testing.T) {
 	ts := newTestServer(t)
 	initApp(t, ts)
 
-	res, err := http.Get(ts.URL + "/auctions/99999")
+	res, err := http.Get(ts.URL + "/api/auctions/99999")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestGetAuctionClosedDetail(t *testing.T) {
 	ts := newTestServer(t)
 	initApp(t, ts)
 
-	res, err := http.Get(ts.URL + "/auctions/11")
+	res, err := http.Get(ts.URL + "/api/auctions/11")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestGetAuctionInvalidID(t *testing.T) {
 	ts := newTestServer(t)
 	initApp(t, ts)
 
-	res, err := http.Get(ts.URL + "/auctions/notanumber")
+	res, err := http.Get(ts.URL + "/api/auctions/notanumber")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestGetAuctionExposesWinner(t *testing.T) {
 
 	// auction 11 は seed で closed / winner_id=12 / winning_price=12000
 	var closed auctionDetailJSON
-	getJSON(t, ts.URL+"/auctions/11", &closed)
+	getJSON(t, ts.URL+"/api/auctions/11", &closed)
 	if closed.WinnerID == nil || *closed.WinnerID != 12 {
 		t.Errorf("auction 11 winner_id = %v, want 12", closed.WinnerID)
 	}
@@ -228,7 +228,7 @@ func TestGetAuctionExposesWinner(t *testing.T) {
 
 	// live のオークションは null
 	var live auctionDetailJSON
-	getJSON(t, ts.URL+"/auctions/1", &live)
+	getJSON(t, ts.URL+"/api/auctions/1", &live)
 	if live.WinnerID != nil || live.WinningPrice != nil {
 		t.Errorf("auction 1 (live) winner = %v/%v, want null/null", live.WinnerID, live.WinningPrice)
 	}
@@ -264,7 +264,7 @@ func TestPostAuction(t *testing.T) {
 	c := loginSeedUser(t, ts.URL, "seed_user_03")
 
 	before := time.Now().UTC()
-	res, err := c.Post(ts.URL+"/auctions", "application/json", strings.NewReader(
+	res, err := c.Post(ts.URL+"/api/auctions", "application/json", strings.NewReader(
 		`{"title":"テスト椅子","description":"説明","category_id":1,"starting_price":5000,"duration_seconds":30}`))
 	if err != nil {
 		t.Fatal(err)
@@ -294,7 +294,7 @@ func TestPostAuction(t *testing.T) {
 
 	// 一覧に live として現れ、詳細も引ける
 	var d auctionDetailJSON
-	getJSON(t, fmt.Sprintf("%s/auctions/%d", ts.URL, created.ID), &d)
+	getJSON(t, fmt.Sprintf("%s/api/auctions/%d", ts.URL, created.ID), &d)
 	if d.Status != "live" || d.CurrentPrice != 5000 || len(d.Bids) != 0 {
 		t.Errorf("詳細が不正: status=%q current_price=%d bids=%d", d.Status, d.CurrentPrice, len(d.Bids))
 	}
@@ -320,7 +320,7 @@ func TestPostAuctionValidation(t *testing.T) {
 		{"存在しないカテゴリ", `{"title":"t","description":"d","category_id":999,"starting_price":5000,"duration_seconds":30}`, http.StatusBadRequest},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			res, err := c.Post(ts.URL+"/auctions", "application/json", strings.NewReader(tt.body))
+			res, err := c.Post(ts.URL+"/api/auctions", "application/json", strings.NewReader(tt.body))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -332,7 +332,7 @@ func TestPostAuctionValidation(t *testing.T) {
 	}
 
 	// 未ログインは 401
-	res, err := http.Post(ts.URL+"/auctions", "application/json", strings.NewReader(
+	res, err := http.Post(ts.URL+"/api/auctions", "application/json", strings.NewReader(
 		`{"title":"t","description":"d","category_id":1,"starting_price":5000,"duration_seconds":30}`))
 	if err != nil {
 		t.Fatal(err)
@@ -354,7 +354,7 @@ func createLiveAuctions(t *testing.T, ts *httptest.Server, n int) []int64 {
 	for i := 0; i < n; i++ {
 		body := fmt.Sprintf(
 			`{"title":"ページング用 %02d","description":"説明","category_id":1,"starting_price":5000,"duration_seconds":100}`, i)
-		res, err := c.Post(ts.URL+"/auctions", "application/json", strings.NewReader(body))
+		res, err := c.Post(ts.URL+"/api/auctions", "application/json", strings.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -478,7 +478,7 @@ func TestGetAuctionsEmptyArrayNotNull(t *testing.T) {
 	ts := newTestServer(t)
 	initApp(t, ts)
 
-	res, err := http.Get(ts.URL + "/auctions?page=99")
+	res, err := http.Get(ts.URL + "/api/auctions?page=99")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +497,7 @@ func TestGetAuctionsInvalidPage(t *testing.T) {
 	initApp(t, ts)
 
 	for _, q := range []string{"?page=0", "?page=-1", "?page=abc", "?page=1.5", "?page=99999999999999999999", "?page=9223372036854775807"} {
-		res, err := http.Get(ts.URL + "/auctions" + q)
+		res, err := http.Get(ts.URL + "/api/auctions" + q)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -588,7 +588,7 @@ func TestGetAuctionsInvalidSearchParams(t *testing.T) {
 
 	long := "?q=" + url.QueryEscape(strings.Repeat("あ", 256))
 	for _, q := range []string{"?category=abc", "?category=1.5", long} {
-		res, err := http.Get(ts.URL + "/auctions" + q)
+		res, err := http.Get(ts.URL + "/api/auctions" + q)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -600,7 +600,7 @@ func TestGetAuctionsInvalidSearchParams(t *testing.T) {
 
 	// ちょうど 255 rune は通る(境界)
 	ok := "?q=" + url.QueryEscape(strings.Repeat("あ", 255))
-	res, err := http.Get(ts.URL + "/auctions" + ok)
+	res, err := http.Get(ts.URL + "/api/auctions" + ok)
 	if err != nil {
 		t.Fatal(err)
 	}

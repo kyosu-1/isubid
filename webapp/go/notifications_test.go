@@ -22,7 +22,7 @@ type notificationsResponseJSON struct {
 
 func getNotificationsAs(t *testing.T, c *http.Client, url string) notificationsResponseJSON {
 	t.Helper()
-	res, err := c.Get(url + "/notifications")
+	res, err := c.Get(url + "/api/notifications")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,13 +43,13 @@ func TestGetNotifications(t *testing.T) {
 
 	// user 5 が auction 1 に2回入札 → user 2,3,4 に各2件の outbid 通知
 	bidder := loginSeedUser(t, ts.URL, "seed_user_05")
-	res := postJSON(t, bidder, ts.URL+"/auctions/1/bids", `{"amount":1600}`)
+	res := postJSON(t, bidder, ts.URL+"/api/auctions/1/bids", `{"amount":1600}`)
 	res.Body.Close()
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("post bid 1 status = %d, want 201", res.StatusCode)
 	}
 
-	res = postJSON(t, bidder, ts.URL+"/auctions/1/bids", `{"amount":1700}`)
+	res = postJSON(t, bidder, ts.URL+"/api/auctions/1/bids", `{"amount":1700}`)
 	res.Body.Close()
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("post bid 2 status = %d, want 201", res.StatusCode)
@@ -96,7 +96,7 @@ func TestGetNotifications(t *testing.T) {
 func TestGetNotificationsRequiresLogin(t *testing.T) {
 	ts := newTestServer(t)
 	initApp(t, ts)
-	res, err := http.Get(ts.URL + "/notifications")
+	res, err := http.Get(ts.URL + "/api/notifications")
 	if err != nil {
 		t.Fatal(err)
 	}

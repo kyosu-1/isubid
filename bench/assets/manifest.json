@@ -1,0 +1,29 @@
+{
+  "generated_at": "2026-08-31T10:22:16Z",
+  "files": [
+    {
+      "path": "/assets/index-BHaSQrN4.css",
+      "sha256": "9ea55dac98cd5d96f30b084877177d92ec7286222775ca93756a40ac0e024f70",
+      "size": 1802,
+      "content_type": "text/css; charset=utf-8"
+    },
+    {
+      "path": "/assets/index-CADU8GvG.js",
+      "sha256": "3f150b2d1706948f90ac59c8872c820de99027e1b8f4cf830f7a001b50ac27c2",
+      "size": 178436,
+      "content_type": "text/javascript; charset=utf-8"
+    },
+    {
+      "path": "/favicon.svg",
+      "sha256": "d8cf5b6c95d8d8afb8ab7aebb4d3d4b801851469cac56774d9c78507470dcd6e",
+      "size": 192,
+      "content_type": "image/svg+xml"
+    },
+    {
+      "path": "/index.html",
+      "sha256": "67cd0d40adc1d60457aef9f0aed94ba252892af48cf8a1c2da1279cf1f39e893",
+      "size": 464,
+      "content_type": "text/html; charset=utf-8"
+    }
+  ]
+}
