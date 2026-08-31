@@ -43,6 +43,8 @@ func routerFor(h *handler) http.Handler {
 		r.Get("/users/{id}/icon", h.getUserIcon)
 		r.Get("/stats/me", h.getStatsMe)
 	})
+	// /api 以外はすべて静的配信(SPA)へ回す。
+	r.NotFound(h.serveStatic)
 	return r
 }
 
