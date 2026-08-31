@@ -2384,3 +2384,223 @@ Prepare リクエスト数を数えるために繰り返したもので、その
     再現しようとしていた欠陥は再現できていなかった** —— 「FAIL した」で満足すると
     ゲートが空振りしていることに気づけない。旧ルールの3項を1つずつ突き合わせる
     手順(上記の表)を踏んだことで発覚した。
+
+## 4-D SPAフロントエンドとアセット追従検証
+
+### 設計判断
+
+- **API を `/api` 配下へ移した**: SPA のクライアントルート `/auctions/123` と
+  API の `GET /auctions/:id` が同一パスになり、chi が API を先にマッチさせるため
+  ディープリンクが JSON を返す。ISUCON11/12/13 が同じ理由で同じ形を採っている
+- **静的配信をアプリ経由のままにした**: `dev/nginx.conf` は全部をアプリへ流す。
+  ファイルは nginx コンテナからも見えるようにマウントしてあり(改善路を塞がないため)、
+  設定だけが使っていない状態が正しい初期状態である
+- **`ScoreGETPage` はページロード1回につき1点**: アセット1本ごとに加点すると、
+  キャッシュを効かせて取得回数を減らす正しい最適化がスコアを下げる
+- **アセット検証は 200 と 304 を両方受理し、ハッシュはデコード後のバイト列で取る**:
+  gzip とキャッシュという正しい改善を罰しないため。Content-Type は
+  「index.html が text/html」「アセットが text/html でない」だけを見る
+  (`application/javascript` と `text/javascript` の食い違いで false-FAIL しないため)
+- **マニフェストはベンチに `go:embed`**: 参加者が差し替えられないことが検証の前提
+- **ユーザーアイコンはマニフェストの照合対象にしない**: 内容が DB 由来であり、
+  `/api/users/:id/icon` は API ルートなので静的ハンドラにもマニフェスト
+  (`webapp/public` を歩いて作る)にも載らない。4-C が「アイコンはコストであって
+  報酬ではない」として採点タグを作っていないのと二重にならないようにした
+- **`ScoreGETPage` を `scoredTags` と `livenessRequired` の両方に登録した**(4-E1 の契約):
+  前者を忘れると内訳の合計が `raw` と一致しなくなり、後者を忘れるとページロードが
+  liveness 判定を黙ってすり抜ける。`livenessRequired` では
+  `ScoreGETList` / `ScoreGETDetail` の条件にも `Visitors > 0` を加えた
+  (訪問者 worker がこの2本も加点するため)
+- **一覧画面の検索条件とページ番号を `useSearchParams` で URL に載せた**:
+  コンポーネント内の状態に留めるとリロードと「戻る」が壊れ、共有リンクが再現しない
+- **カテゴリ3件はフロントにハードコードした**: `/initialize` が必ず同じ3件へ戻す固定値であり、
+  `GET /api/categories` を足すとベンチ検証も足す必要が出る
+
+### スコープの絞り込み(Task 9)
+
+Task 9 のブリーフは G1〜G5 をフルに定義しているが、フェーズ最終確認として
+**G5(Prepare 3回、Task 6/7 のハッシュ照合増加の確認)・G1(60秒走行1本)・
+実配信の確認**の3点に絞って実測した。G3(`<script>` 除去)、G4(nginx 直配信の
+3回×3回による非回帰の詳細分解)、`medium`/`full` スケールは今回省いた。
+G2(アセット1バイト改変)だけは、Task 9 の主眼である「ハッシュ照合が増えた分は
+何を買っているか」に直結する決定的なケースとして1つだけ実施した。
+
+**brief の Step 1 コマンドについての判断。** brief の G5 は
+`go run . -target http://localhost:8080 -prepare-only`(`-snapshot` なし)と
+指定しているが、これは `-snapshot` を渡さないと「生成データ非搭載モード」
+(`bench/main.go`: `snapshotPath` が空なら `snap == nil` で
+`bench/scenario.go` が seed 10件だけの `ValidateInitialAuctionList` 経路に入る)
+になる。一方この dev 環境は `dev/compose.yaml` の `app` サービスに
+`ISUBID_INITIAL_DATA_DIR: /initial-data` が常時設定されており、`/initialize` は
+必ず生成データ(60件の live オークション)まで投入する。そのため brief のコマンドを
+文字どおり実行すると `GET /auctions: 件数が 20 (期待: 10)` で即座に `PREPARE: FAIL`
+になり(実測済み、下記に転記)、6秒基準を計るどころではない。過去の全ベースライン
+(4-B ゲート2、4-C の1.79〜1.81秒、4-E1 ゲート5)もすべて `-snapshot` 付きで
+測られているため、**`-snapshot ../initial-data/out/snapshot.json` を補って
+測り直した。** brief のコマンドの脱落と判断する(`bench/`・`dev/compose.yaml` は
+変更していない)。
+
+### 受け入れゲートの実測(2026-08-31、本ブランチ HEAD `31ab8d7`)
+
+| ゲート | 内容 | 結果 |
+|---|---|---|
+| G1 | 通常の60秒走行 | `LIVENESS: PASS`(floor 6回、判定対象8/8本すべて到達) / `RESULT: PASS` / critical 0件 / `SCORE: 19018` |
+| G2 | アセットを1バイト改変 | `PREPARE: FAIL`、`中身がビルド成果物と異なる` を実測。復元後 `PREPARE: PASS` に回帰 |
+| G3 | index.html から script を除去 | 未実施(Task 9 の絞り込みにより省略。4-E で必要なら実施) |
+| G4 | nginx 直配信 + gzip | 未実施(Task 9 の絞り込みにより省略。4-E で必要なら実施) |
+| G5 | Prepare 3回連続(6秒基準) | `-snapshot` なし(brief 文字どおり)は3回とも `PREPARE: FAIL`(件数不一致、環境設定と不整合なだけで欠陥ではない)。`-snapshot` 付きで測り直し、3回とも `PREPARE: PASS`、**1.69〜1.79秒**で6秒基準内 |
+
+**G5 の生データ(`-snapshot` なし、brief 文字どおり)。**
+
+```
+=== run 1 ===
+ERR: prepare: GET /auctions: 件数が 20 (期待: 10)
+PREPARE: FAIL
+real 0.54
+=== run 2 ===
+ERR: prepare: GET /auctions: 件数が 20 (期待: 10)
+PREPARE: FAIL
+real 0.43
+=== run 3 ===
+ERR: prepare: GET /auctions: 件数が 20 (期待: 10)
+PREPARE: FAIL
+real 0.42
+```
+
+**G5 の生データ(`-snapshot ../initial-data/out/snapshot.json` を補って測り直し)。**
+`go build -o /dev/null .` でビルドキャッシュを温めたうえで、直前に `/api/initialize`
+で新規データを投入してから測定した(4-E1 ゲート5 と同条件)。
+
+```
+=== run 1 ===
+PREPARE: PASS
+real 1.69
+=== run 2 ===
+PREPARE: PASS
+real 1.76
+=== run 3 ===
+PREPARE: PASS
+real 1.79
+```
+
+**Task 6/7 のハッシュ照合増加ぶんの評価。** 4-C 時点(アイコン検証を足した後、
+アセット検証はまだ無い)の実測は **1.79〜1.81秒**(`2ac4cfe`)。今回(アセット
+マニフェスト照合を追加した後)の実測は **1.69〜1.79秒**で、レンジがほぼ重なり
+悪化が見えない。→ **1秒以上の増加なし。挿入位置の変更は不要と判断する。**
+
+**G1 の生データ。**
+
+```
+SCORE: 19018  (raw 19018, penalty 0)
+  GET /auctions            : 2515回 (2515点)
+  GET /auctions (検索)       : 1167回 (2334点)
+  GET /auctions/:id        : 3670回 (3670点)
+  POST /auctions/:id/bids  : 1081回 (5405点)
+  GET /auctions/:id/bids   : 1081回 (1081点)
+  GET /notifications       : 479回 (958点)
+  POST /auctions           : 457回 (2285点)
+  GET / (ページロード)           : 770回 (770点)
+ERRORS: 0件 (critical: 0件)
+LIVENESS: PASS (floor 6回、判定対象8/8本すべて到達)
+RESULT: PASS
+```
+
+内訳8行、末尾が `GET / (ページロード)`。検算: 各行 `count × weight == points`
+(2515×1=2515、1167×2=2334、3670×1=3670、1081×5=5405、1081×1=1081、479×2=958、
+457×5=2285、770×1=770)。合計 2515+2334+3670+5405+1081+958+2285+770 = **19018**
+= raw。`SCORE = raw − penalty = 19018 − 0 = 19018`。すべて一致。
+
+**この走行と、前タスク(Task 8)およびそのレビューで測られた走行を並べる。**
+
+| 走行 | SCORE | GET / (ページロード) | ERRORS(critical) | LIVENESS | RESULT |
+|---|---|---|---|---|---|
+| Task 9(本タスク) | 19018 | 770回 | 0件(0件) | PASS(floor 6回、8/8) | PASS |
+| Task 8 実装者 | 18835 | 757回 | 0件(0件) | PASS(floor 6回、8/8) | PASS |
+| Task 8 レビュアー | 19154 | 779回 | 0件(0件) | PASS(floor 6回、8/8) | PASS |
+
+3本とも `LIVENESS: PASS`・`RESULT: PASS`・critical 0件で、`SCORE` は
+18835〜19154 のレンジに収まる。**このマシンは同一セッション内でもスコアが
+約7〜12%振れる**(4-D ゲート4 の判定基準として既に記録済みの性質)ため、
+この3本の差(±1%未満)は素直にノイズの範囲内であり、増減を「改善/悪化」とは読まない。
+
+**`GET /auctions` と `GET /auctions/:id` の内訳を読むときの注意。** この2本は
+4-A〜4-E1 の過去ログでは検索・詳細ワーカーだけが加点していたが、Task 8 で
+`visitorIteration` がここにも加点するようになった。既定の `-visitors 2` でも
+779点/19154 ≒ 4.1%(参考: 実装者測定でも757点/18835 ≒ 4.0%)が visitor 由来で
+上乗せされている。**したがってこの2本の回数を4-C以前の実測ログと直接比較しては
+いけない**——測っている対象(ワーカー構成)が変わっただけで、実装が速くなった/
+遅くなったことを意味しない。`-visitors` の既定値は変えていない
+(変えると全ゲートの再測定が要るため、本タスクの範囲外とした)。
+
+**ページが実際に配信されて採点されていることの確認。** G1 の `GET / (ページロード)`
+770回・8/8 liveness 到達に加え、実配信を直接 curl で確認した。
+
+```
+$ curl -s -D- -o /dev/null http://localhost:8080/
+HTTP/1.1 200 OK
+Content-Type: text/html; charset=utf-8
+
+$ curl -s -D- -o /dev/null http://localhost:8080/auctions/123
+HTTP/1.1 200 OK
+Content-Type: text/html; charset=utf-8
+
+$ curl -s -D- -o /dev/null http://localhost:8080/assets/index-CADU8GvG.js
+HTTP/1.1 200 OK
+Content-Type: text/javascript; charset=utf-8
+```
+
+`/auctions/123` はディープリンクの SPA クライアントルートであり、API の
+`GET /api/auctions/123` とパスが衝突しないことも同時に確認できている
+(JSON でなく index.html が返る)。
+
+**G2 の生データ。**
+
+```
+$ printf '\n/* tamper */\n' >> webapp/public/assets/index-CADU8GvG.js
+$ docker compose -f dev/compose.yaml restart app
+$ cd bench && go run . -target http://localhost:8080 -snapshot ../initial-data/out/snapshot.json -prepare-only
+ERR: prepare: GET /assets/index-CADU8GvG.js: 中身がビルド成果物と異なる (sha256=50c6f0f8fc915856f76847058da47af126d392e0c30b4f067e2d0635e19d5eca, 期待=3f150b2d1706948f90ac59c8872c820de99027e1b8f4cf830f7a001b50ac27c2)
+PREPARE: FAIL
+exit=1
+```
+
+復元後: `git diff --stat webapp/public` は空、`PREPARE: PASS` に回帰(実測確認済み)。
+
+### 最終確認(Step 11)
+
+`webapp/go`・`bench`・`initial-data` の `go test -count=1 ./...` はすべて PASS
+(`bench` には `TestScoredTagsCoversScoreTable` / `TestLivenessRequiredCoversAllTags` /
+`TestCheckLiveness` / `TestManifestMatchesPublicDir` / `TestVerifyAssets*` を含む)。
+`go vet ./...` もすべて無出力。作業ツリーは本ファイル以外クリーン
+(`dev/nginx.conf` に差分なし、`webapp/public` に差分なし)。
+
+**例外: `gofmt -l` が `bench/score.go` を1件報告する。** `git diff` は空
+(コミット済みの内容そのものが対象)で、本タスクでは触っていない。差分は
+コメントの再フォーマット(`//  なりかけた失敗と同型なので` の行を
+`//\n//\tなりかけた失敗と同型なので` に割る)のみで、意味は変わらない。
+手元の `go version` は `go1.27.0`——本フェーズの他コミットが作られた時点の
+gofmt と挙動が変わった(doc comment の再整形ルール)ためと見られる、
+環境由来のドリフトと判断する。**`bench/` は変更禁止のため本タスクでは直さない。**
+4-E で `gofmt` を掛け直す際にまとめて対応することを持ち越す。
+
+### G4 の生データ
+
+未実施(Task 9 のスコープ絞り込みにより省略)。
+
+### 4-E / 4-F への持ち越し
+
+- **採点タグの表示名に `/api` を反映するかは 4-F で決める。** `bench/score.go` の
+  タグ文字列と `bench/liveness.go` の `scoredTags` の表示名は本フェーズで触っていない。
+  必ず対で直す必要があり、直すと本ファイルに残る 4-A〜4-E1 の実測ログとの文字列突合が
+  壊れるため、レギュレーション文書を書くときに他の表記と一緒に判断する
+- **G3・G4 が未実測のまま残る。** G3(`<script>` 除去で Prepare が `HTML から辿れない`
+  で落ちること)と G4(nginx 直配信+gzip でスコアが有意に上がること、変更前後
+  3回×3回の中央値比較)は今回のスコープ外とした。4-E で静的配信の重みを
+  検討する際に、G4 の「改善がノイズに埋もれるか」の判定も合わせて行う必要がある。
+- **`gofmt -l` が `bench/score.go` を1件報告する環境ドリフトが見つかった。**
+  上記「最終確認」参照。`bench/` 変更禁止のため本タスクでは未対応。4-E で
+  `gofmt` を掛け直す際にまとめて対応する。
+- **brief の G5 コマンドに `-snapshot` が欠落している。** この dev 環境は
+  `ISUBID_INITIAL_DATA_DIR` が常時設定されており生成データ非搭載モードでは
+  測れない。以後のフェーズでブリーフに Prepare コマンドを書くときは
+  `-snapshot ../initial-data/out/snapshot.json` を既定で含めること。
