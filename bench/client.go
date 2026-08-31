@@ -150,6 +150,26 @@ func (c *Client) Login(ctx context.Context, name, password string) (*User, error
 	return c.auth(ctx, "/api/login", name, password, http.StatusOK)
 }
 
+// GetMe はログイン中のユーザーを返す。未ログインなら401を期待する呼び出し側のために
+// ステータスをそのまま返さず、401 は (nil, nil) で表現する。
+func (c *Client) GetMe(ctx context.Context) (*User, error) {
+	code, b, err := c.doJSON(ctx, http.MethodGet, "/api/me", nil)
+	if err != nil {
+		return nil, err
+	}
+	if code == http.StatusUnauthorized {
+		return nil, nil
+	}
+	if code != http.StatusOK {
+		return nil, fmt.Errorf("GET /api/me: status %d (期待: 200 か 401, body: %s)", code, b)
+	}
+	var u User
+	if err := json.Unmarshal(b, &u); err != nil {
+		return nil, fmt.Errorf("GET /api/me: 不正なJSON: %w", err)
+	}
+	return &u, nil
+}
+
 // AuctionListParams は GET /auctions のクエリ。ゼロ値は「page 未指定・絞り込み無し」。
 type AuctionListParams struct {
 	Page     int    // 0 なら page を送らない

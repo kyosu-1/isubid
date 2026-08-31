@@ -632,6 +632,32 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 		return err
 	}
 
+	// セッションが実際に確立していることを /api/me で確認する。
+	// SPA はリロード後にこの1本だけで身元を解決するので、ここが壊れると
+	// ログイン済みの画面がすべてゲスト表示になる。
+	me, err := seedClient.GetMe(ctx)
+	if err != nil {
+		return err
+	}
+	if me == nil {
+		return fmt.Errorf("GET /api/me: ログイン直後なのに401が返った")
+	}
+	if me.ID != seedUser.ID || me.Name != seedUser.Name {
+		return fmt.Errorf("GET /api/me: %+v (期待: %+v)", *me, *seedUser)
+	}
+
+	// 未ログインのクライアントでは401になること。
+	// c は上で Register 済み(= ログイン済み)なので流用できない。
+	guest, err := NewClient(s.Target)
+	if err != nil {
+		return err
+	}
+	if g, err := guest.GetMe(ctx); err != nil {
+		return err
+	} else if g != nil {
+		return fmt.Errorf("GET /api/me: 未ログインなのにユーザーが返った: %+v", *g)
+	}
+
 	// 4. 入札の検証: 低すぎる入札は400、正しい入札は201で詳細に反映される
 	const auctionID = 1
 	detail, err := seedClient.GetAuction(ctx, auctionID)
