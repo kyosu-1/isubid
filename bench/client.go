@@ -355,3 +355,77 @@ func (c *Client) GetStatsMe(ctx context.Context) (*Stats, error) {
 	}
 	return &s, nil
 }
+
+// LoadedResource は取得済みのサブリソース1本。
+type LoadedResource struct {
+	Path   string
+	Status int
+	Type   string
+	Body   []byte
+}
+
+// PageLoad は「ブラウザがサイトを1回開いた」結果。
+type PageLoad struct {
+	IndexStatus int
+	IndexType   string
+	IndexBody   []byte
+	Resources   map[string]LoadedResource
+}
+
+// GetPage は / を取得し、HTML から辿れるサブリソース(script/stylesheet/icon/img)を
+// すべて取得する。
+//
+// Body は必ずデコード後のバイト列になる。isucandar の agent が
+// Content-Encoding を透過的に解凍し(agent/decompress.go)、304 のときは
+// キャッシュ済みのボディを res.Body へ差し戻す(agent/cache.go の newCache)ため、
+// 呼び出し側は圧縮とキャッシュの有無を意識しなくてよい。
+func (c *Client) GetPage(ctx context.Context) (*PageLoad, error) {
+	req, err := c.ag.GET("/")
+	if err != nil {
+		return nil, err
+	}
+	res, err := c.ag.Do(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	body, err := io.ReadAll(res.Body)
+	res.Body.Close()
+	if err != nil {
+		return nil, fmt.Errorf("GET /: 本文の読み取りに失敗: %w", err)
+	}
+	pl := &PageLoad{
+		IndexStatus: res.StatusCode,
+		IndexType:   res.Header.Get("Content-Type"),
+		IndexBody:   body,
+		Resources:   map[string]LoadedResource{},
+	}
+	// ProcessHTML は渡した body を読み切って閉じるので、読み終えた中身を包み直して渡す。
+	resources, err := c.ag.ProcessHTML(ctx, res, io.NopCloser(bytes.NewReader(body)))
+	if err != nil {
+		return nil, fmt.Errorf("GET /: HTMLの解析に失敗: %w", err)
+	}
+	for _, r := range resources {
+		if r.Request == nil {
+			continue
+		}
+		p := r.Request.URL.Path
+		if r.Error != nil {
+			return nil, fmt.Errorf("GET %s: 取得に失敗: %w", p, r.Error)
+		}
+		if r.Response == nil {
+			return nil, fmt.Errorf("GET %s: 応答が無い", p)
+		}
+		rb, err := io.ReadAll(r.Response.Body)
+		r.Response.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("GET %s: 本文の読み取りに失敗: %w", p, err)
+		}
+		pl.Resources[p] = LoadedResource{
+			Path:   p,
+			Status: r.Response.StatusCode,
+			Type:   r.Response.Header.Get("Content-Type"),
+			Body:   rb,
+		}
+	}
+	return pl, nil
+}

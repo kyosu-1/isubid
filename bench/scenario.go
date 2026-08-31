@@ -30,6 +30,7 @@ type Scenario struct {
 	Board       *listingBoard
 	Ledger      *Ledger
 	Snapshot    *Snapshot
+	Assets      *Manifest
 }
 
 // newListingPubSub は出品配信用の PubSub を作る。
@@ -434,6 +435,20 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 	base := time.Now().UTC()
 	if lang == "" {
 		return fmt.Errorf("POST /api/initialize: lang が空")
+	}
+
+	// アセット検証。壊れたビルドを配信していたら以降の検証は意味を持たないので最初に見る。
+	m, err := LoadEmbeddedManifest()
+	if err != nil {
+		return err
+	}
+	s.Assets = m
+	pl, err := c.GetPage(ctx)
+	if err != nil {
+		return err
+	}
+	if err := VerifyAssets(m, pl); err != nil {
+		return err
 	}
 
 	// 2. 初期データの検証
