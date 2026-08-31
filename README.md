@@ -40,6 +40,17 @@ cd webapp/go && go test ./...
 cd bench && go test ./...
 ```
 
+### フロントエンドを変更したとき
+
+```bash
+cd webapp/frontend && npm install && npm run build   # -> webapp/public/
+cd ../../bench && go run ./cmd/genmanifest -public ../webapp/public -out assets/manifest.json
+go test ./...                                        # マニフェストのドリフト検知
+```
+
+`webapp/public/` と `bench/assets/manifest.json` はセットでコミットする。
+片方だけ更新すると Prepare がアセットのハッシュ不一致で FAIL する。
+
 ## ステータス
 
 Phase 3(pub/sub要素)まで完了。入札フィード・通知ファンアウト・終了処理と落札確定・
