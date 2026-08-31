@@ -23,7 +23,7 @@ const (
 // スコアを下げてしまう。ページロード単位なら「静的配信が速いほど1イテレーションが
 // 短くなり、他のスコアが伸びる」という正しい向きだけが残る。
 // (Phase 3 で ScoreGETFeed をポーリング1回ごとに加点し、遅いフィードほど高得点に
-//  なりかけた失敗と同型なので、同じ轍を踏まないこと)
+// なりかけた失敗と同型なので、同じ轍を踏まないこと)
 //
 // タグを足したら bench/liveness.go の scoredTags と livenessRequired にも必ず足すこと。
 var scoreTable = map[score.ScoreTag]int64{
