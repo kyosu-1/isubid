@@ -111,9 +111,14 @@ GET  /api/stats/me
 ハンドラ本体は一切変更しない。
 
 **影響範囲**(すべて機械的):
-`webapp/go/main.go` / `webapp/go/*_test.go` / `bench/client.go`(10箇所) /
+`webapp/go/main.go` / `webapp/go/*_test.go` / `bench/client.go`(**12箇所**) /
+`bench/scenario.go`(**2箇所**の直書き) /
 `dev/nginx.conf`(変更なしで動くが §6 参照) / `README.md`。
 `docs/superpowers/specs/2026-07-08-isubid-design.md` の API 表は 4-F で正とする(本フェーズでは触らない)。
+
+> **改訂(2026-08-31)。** 執筆時点は「`bench/client.go` の10箇所」だった。4-C で
+> `GetUserIcon` と `doRaw` が、4-B で `GetAuctionsRaw` が加わり **12箇所**になっている。
+> `bench/scenario.go` の直書き2箇所は元から漏れていた。§3.1 の表が正。
 
 ### 4.1 `GET /api/me`
 
