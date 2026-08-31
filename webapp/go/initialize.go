@@ -168,19 +168,19 @@ func (h *handler) postInitialize(w http.ResponseWriter, r *http.Request) {
 
 	db, err := sqlx.Open("mysql", dbDSN(true))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	defer db.Close()
 
 	if generatedDir != "" {
 		if err := loadViaInitScript(sqlDir); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, r, err)
 			return
 		}
 	} else {
 		if err := loadViaGo(r.Context(), db, sqlDir); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, r, err)
 			return
 		}
 	}
@@ -202,12 +202,12 @@ func (h *handler) postInitialize(w http.ResponseWriter, r *http.Request) {
 	// 後続のシード側の主キー更新数件はマイクロ秒オーダーで終わる)。
 	if generatedDir != "" {
 		if err := applyGeneratedSchedule(r.Context(), db, base); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, r, err)
 			return
 		}
 	}
 	if err := applyRelativeSchedule(r.Context(), db, base); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"lang": "go"})

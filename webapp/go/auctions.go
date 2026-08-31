@@ -192,7 +192,7 @@ func (h *handler) getAuctions(w http.ResponseWriter, r *http.Request) {
 	// 正しい実装でも起きてしまう。意図的なN+1構成はそのまま維持し、読み取り一貫性のみ確保する。
 	tx, err := h.db.BeginTxx(r.Context(), nil)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	defer tx.Rollback()
@@ -202,7 +202,7 @@ func (h *handler) getAuctions(w http.ResponseWriter, r *http.Request) {
 	// (LIKE 検索時はフルスキャンが2回になる)。
 	if err := tx.GetContext(r.Context(), &total,
 		"SELECT COUNT(*) FROM auctions WHERE "+cond, args...); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 
@@ -213,7 +213,7 @@ func (h *handler) getAuctions(w http.ResponseWriter, r *http.Request) {
 	if err := tx.SelectContext(r.Context(), &rows,
 		"SELECT "+auctionColumns+" FROM auctions WHERE "+cond+
 			" ORDER BY ends_at ASC, id ASC LIMIT ? OFFSET ?", pageArgs...); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 
@@ -221,7 +221,7 @@ func (h *handler) getAuctions(w http.ResponseWriter, r *http.Request) {
 	for i := range rows {
 		s, err := h.summarize(r.Context(), tx, &rows[i]) // 意図的に遅い実装(N+1)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, r, err)
 			return
 		}
 		summaries = append(summaries, *s)
@@ -244,7 +244,7 @@ func (h *handler) getAuction(w http.ResponseWriter, r *http.Request) {
 	// bid_count と bids件数が食い違う(意図的なN+1構成はそのまま維持しつつ読み取り一貫性のみ確保)。
 	tx, err := h.db.BeginTxx(r.Context(), nil)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	defer tx.Rollback()
@@ -257,12 +257,12 @@ func (h *handler) getAuction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	s, err := h.summarize(r.Context(), tx, &a)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	var bidRows []struct {
@@ -273,7 +273,7 @@ func (h *handler) getAuction(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := tx.SelectContext(r.Context(), &bidRows,
 		"SELECT id, user_id, amount, created_at FROM bids WHERE auction_id = ? ORDER BY created_at DESC, id DESC", id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	bids := make([]bidResponse, 0, len(bidRows))
@@ -282,7 +282,7 @@ func (h *handler) getAuction(w http.ResponseWriter, r *http.Request) {
 		// 意図的に遅い実装(N+1): 入札ごとにユーザーを引く
 		if err := tx.GetContext(r.Context(), &u,
 			"SELECT id, name FROM users WHERE id = ?", b.UserID); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, r, err)
 			return
 		}
 		bids = append(bids, bidResponse{ID: b.ID, User: u, Amount: b.Amount, CreatedAt: b.CreatedAt})
@@ -334,7 +334,7 @@ func (h *handler) postAuction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 
@@ -345,7 +345,7 @@ func (h *handler) postAuction(w http.ResponseWriter, r *http.Request) {
 			"VALUES (?, ?, ?, ?, ?, ?, ?, 'live')",
 		userID, req.CategoryID, req.Title, req.Description, req.StartingPrice, now, endsAt)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	id, _ := res.LastInsertId()

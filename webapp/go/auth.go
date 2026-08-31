@@ -30,7 +30,7 @@ func (h *handler) postRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcryptCost)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	res, err := h.db.ExecContext(r.Context(),
@@ -41,12 +41,12 @@ func (h *handler) postRegister(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "name already taken")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	id, _ := res.LastInsertId()
 	if err := setLogin(w, r, id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, userResponse{ID: id, Name: req.Name})
@@ -70,7 +70,7 @@ func (h *handler) postLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.Password)) != nil {
@@ -78,7 +78,7 @@ func (h *handler) postLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := setLogin(w, r, u.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, userResponse{ID: u.ID, Name: u.Name})

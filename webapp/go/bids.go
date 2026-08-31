@@ -40,7 +40,7 @@ func (h *handler) postBid(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := h.db.BeginTxx(r.Context(), nil)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	defer tx.Rollback()
@@ -55,7 +55,7 @@ func (h *handler) postBid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	if a.Status != "live" {
@@ -65,7 +65,7 @@ func (h *handler) postBid(w http.ResponseWriter, r *http.Request) {
 	var maxAmount sql.NullInt64
 	if err := tx.GetContext(r.Context(), &maxAmount,
 		"SELECT MAX(amount) FROM bids WHERE auction_id = ?", auctionID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	current := a.StartingPrice
@@ -83,14 +83,14 @@ func (h *handler) postBid(w http.ResponseWriter, r *http.Request) {
 		"INSERT INTO bids (auction_id, user_id, amount) VALUES (?, ?, ?)",
 		auctionID, userID, req.Amount)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	bidID, _ := res.LastInsertId()
 	var createdAt time.Time
 	if err := tx.GetContext(r.Context(), &createdAt,
 		"SELECT created_at FROM bids WHERE id = ?", bidID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 
@@ -100,7 +100,7 @@ func (h *handler) postBid(w http.ResponseWriter, r *http.Request) {
 	if err := tx.SelectContext(r.Context(), &targets,
 		"SELECT DISTINCT user_id FROM bids WHERE auction_id = ? AND user_id <> ?",
 		auctionID, userID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	message := "「" + truncateForNotification(a.Title) + "」で他のユーザーに競り負けました"
@@ -108,12 +108,12 @@ func (h *handler) postBid(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.ExecContext(r.Context(),
 			"INSERT INTO notifications (user_id, type, auction_id, message) VALUES (?, 'outbid', ?, ?)",
 			uid, auctionID, message); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, r, err)
 			return
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, bidCreated{

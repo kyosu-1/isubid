@@ -35,7 +35,7 @@ func (h *handler) getNotifications(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.SelectContext(r.Context(), &rows,
 		"SELECT id, type, auction_id, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY id DESC",
 		userID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, r, err)
 		return
 	}
 	out := make([]notificationResponse, 0, len(rows))
