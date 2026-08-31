@@ -16,7 +16,7 @@ func TestGetAuctionBids(t *testing.T) {
 
 	// auction 1 の seed 入札は id 1,2,3 (amount 1000/1200/1500)
 	var all feedResponseJSON
-	getJSON(t, ts.URL+"/auctions/1/bids", &all)
+	getJSON(t, ts.URL+"/api/auctions/1/bids", &all)
 	if len(all.Bids) != 3 {
 		t.Fatalf("since 無し: %d件, want 3", len(all.Bids))
 	}
@@ -35,7 +35,7 @@ func TestGetAuctionBids(t *testing.T) {
 
 	// since で絞り込む
 	var after feedResponseJSON
-	getJSON(t, ts.URL+"/auctions/1/bids?since=2", &after)
+	getJSON(t, ts.URL+"/api/auctions/1/bids?since=2", &after)
 	if len(after.Bids) != 1 {
 		t.Fatalf("since=2: %d件, want 1", len(after.Bids))
 	}
@@ -45,7 +45,7 @@ func TestGetAuctionBids(t *testing.T) {
 
 	// 全部読み切った後は空配列(null ではない)
 	var none feedResponseJSON
-	getJSON(t, ts.URL+"/auctions/1/bids?since=3", &none)
+	getJSON(t, ts.URL+"/api/auctions/1/bids?since=3", &none)
 	if none.Bids == nil {
 		t.Error("bids が null (期待: 空配列)")
 	}
@@ -62,10 +62,10 @@ func TestGetAuctionBidsErrors(t *testing.T) {
 		path string
 		want int
 	}{
-		{"/auctions/1/bids?since=abc", http.StatusBadRequest},
-		{"/auctions/1/bids?since=-1", http.StatusBadRequest},
-		{"/auctions/abc/bids", http.StatusBadRequest},
-		{"/auctions/99999/bids", http.StatusNotFound},
+		{"/api/auctions/1/bids?since=abc", http.StatusBadRequest},
+		{"/api/auctions/1/bids?since=-1", http.StatusBadRequest},
+		{"/api/auctions/abc/bids", http.StatusBadRequest},
+		{"/api/auctions/99999/bids", http.StatusNotFound},
 	} {
 		res, err := http.Get(ts.URL + tt.path)
 		if err != nil {
@@ -82,7 +82,7 @@ func TestGetAuctionBidsErrors(t *testing.T) {
 func TestGetAuctionBidsErrorBody(t *testing.T) {
 	ts := newTestServer(t)
 	initApp(t, ts)
-	res, err := http.Get(ts.URL + "/auctions/1/bids?since=abc")
+	res, err := http.Get(ts.URL + "/api/auctions/1/bids?since=abc")
 	if err != nil {
 		t.Fatal(err)
 	}

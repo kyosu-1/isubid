@@ -111,7 +111,7 @@ func (s *Scenario) bidderIteration(ctx context.Context, step *isucandar.Benchmar
 	}
 	list := l.Auctions
 	if len(list) == 0 {
-		addErr(ctx, step, ErrCritical, fmt.Errorf("GET /auctions: 開催中オークションが0件"))
+		addErr(ctx, step, ErrCritical, fmt.Errorf("GET /api/auctions: 開催中オークションが0件"))
 		return
 	}
 	targetID := list[rand.Intn(len(list))].ID
@@ -159,7 +159,7 @@ func (s *Scenario) bidderIteration(ctx context.Context, step *isucandar.Benchmar
 			s.Ledger.Confirm(intentID, AcceptedBid{BidID: bid.ID, AuctionID: targetID, UserID: bid.UserID, Amount: bid.Amount})
 			if bid.UserID != user.ID || bid.Amount != amount {
 				addErr(ctx, step, ErrCritical,
-					fmt.Errorf("POST /auctions/%d/bids: 応答内容が不一致 (got user=%d amount=%d, want user=%d amount=%d)",
+					fmt.Errorf("POST /api/auctions/%d/bids: 応答内容が不一致 (got user=%d amount=%d, want user=%d amount=%d)",
 						targetID, bid.UserID, bid.Amount, user.ID, amount))
 				return
 			}
@@ -174,7 +174,7 @@ func (s *Scenario) bidderIteration(ctx context.Context, step *isucandar.Benchmar
 			// その他の4xx(401/403/404等)も確定的に未コミットと判断してpendingを解消する。
 			s.Ledger.Reject(intentID)
 			addErr(ctx, step, ErrApplication,
-				fmt.Errorf("POST /auctions/%d/bids: 予期しない status %d", targetID, code))
+				fmt.Errorf("POST /api/auctions/%d/bids: 予期しない status %d", targetID, code))
 			return
 		}
 	}
@@ -231,12 +231,12 @@ func (s *Scenario) watcherIteration(ctx context.Context, step *isucandar.Benchma
 	for _, a := range list {
 		if p.Q != "" && !strings.Contains(a.Title, p.Q) {
 			addErr(ctx, step, ErrCritical,
-				fmt.Errorf("GET /auctions?q=%s: title が一致しない行が返った (id=%d title=%q)", p.Q, a.ID, a.Title))
+				fmt.Errorf("GET /api/auctions?q=%s: title が一致しない行が返った (id=%d title=%q)", p.Q, a.ID, a.Title))
 			return
 		}
 		if p.Category != 0 && a.CategoryID != p.Category {
 			addErr(ctx, step, ErrCritical,
-				fmt.Errorf("GET /auctions?category=%d: category_id=%d の行が返った (id=%d)", p.Category, a.CategoryID, a.ID))
+				fmt.Errorf("GET /api/auctions?category=%d: category_id=%d の行が返った (id=%d)", p.Category, a.CategoryID, a.ID))
 			return
 		}
 	}
@@ -417,13 +417,13 @@ func (s *Scenario) sellerIteration(ctx context.Context, step *isucandar.Benchmar
 		// RecordUnknownListingを増やすと、この走行全体でValidationの「想定外のauction」検知が
 		// criticalからapplicationへ不必要に格下げされてしまうため、増やさない。
 		addErr(ctx, step, ErrApplication,
-			fmt.Errorf("POST /auctions: 予期しない status %d", code))
+			fmt.Errorf("POST /api/auctions: 予期しない status %d", code))
 		return
 	}
 	step.AddScore(ScorePOSTAuction)
 	if created.Status != "live" || created.StartingPrice != startingPrice {
 		addErr(ctx, step, ErrCritical,
-			fmt.Errorf("POST /auctions: 応答が不一致 (status=%q starting_price=%d, 期待: live/%d)",
+			fmt.Errorf("POST /api/auctions: 応答が不一致 (status=%q starting_price=%d, 期待: live/%d)",
 				created.Status, created.StartingPrice, startingPrice))
 		return
 	}
@@ -440,7 +440,7 @@ func (s *Scenario) sellerIteration(ctx context.Context, step *isucandar.Benchmar
 	// 出品直後なので、出品数も live 数も最低1件はあるはず。
 	if stats.ListedCount < 1 || stats.LiveCount < 1 {
 		addErr(ctx, step, ErrCritical,
-			fmt.Errorf("GET /stats/me: 出品直後なのに listed_count=%d live_count=%d",
+			fmt.Errorf("GET /api/stats/me: 出品直後なのに listed_count=%d live_count=%d",
 				stats.ListedCount, stats.LiveCount))
 	}
 }

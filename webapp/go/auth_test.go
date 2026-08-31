@@ -31,7 +31,7 @@ func TestRegisterAndLogin(t *testing.T) {
 	initApp(t, ts)
 	client := newClientWithJar(t)
 
-	res := postJSON(t, client, ts.URL+"/register", `{"name":"alice","password":"secretpw"}`)
+	res := postJSON(t, client, ts.URL+"/api/register", `{"name":"alice","password":"secretpw"}`)
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("register status = %d, want 201", res.StatusCode)
@@ -47,7 +47,7 @@ func TestRegisterAndLogin(t *testing.T) {
 		t.Errorf("unexpected user: %+v", u)
 	}
 
-	res2 := postJSON(t, client, ts.URL+"/login", `{"name":"alice","password":"secretpw"}`)
+	res2 := postJSON(t, client, ts.URL+"/api/login", `{"name":"alice","password":"secretpw"}`)
 	defer res2.Body.Close()
 	if res2.StatusCode != http.StatusOK {
 		t.Fatalf("login status = %d, want 200", res2.StatusCode)
@@ -59,9 +59,9 @@ func TestRegisterDuplicateName(t *testing.T) {
 	initApp(t, ts)
 	client := newClientWithJar(t)
 
-	res := postJSON(t, client, ts.URL+"/register", `{"name":"bob","password":"secretpw"}`)
+	res := postJSON(t, client, ts.URL+"/api/register", `{"name":"bob","password":"secretpw"}`)
 	res.Body.Close()
-	res2 := postJSON(t, client, ts.URL+"/register", `{"name":"bob","password":"secretpw"}`)
+	res2 := postJSON(t, client, ts.URL+"/api/register", `{"name":"bob","password":"secretpw"}`)
 	defer res2.Body.Close()
 	if res2.StatusCode != http.StatusConflict {
 		t.Fatalf("duplicate register status = %d, want 409", res2.StatusCode)
@@ -73,7 +73,7 @@ func TestLoginWrongPassword(t *testing.T) {
 	initApp(t, ts)
 	client := newClientWithJar(t)
 
-	res := postJSON(t, client, ts.URL+"/login", `{"name":"seed_user_01","password":"wrong"}`)
+	res := postJSON(t, client, ts.URL+"/api/login", `{"name":"seed_user_01","password":"wrong"}`)
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("login status = %d, want 401", res.StatusCode)
@@ -86,7 +86,7 @@ func TestLoginSeedUser(t *testing.T) {
 	client := newClientWithJar(t)
 
 	// シードユーザーのパスワードは全員 'password'(90_seed_phase1.sql)
-	res := postJSON(t, client, ts.URL+"/login", `{"name":"seed_user_01","password":"password"}`)
+	res := postJSON(t, client, ts.URL+"/api/login", `{"name":"seed_user_01","password":"password"}`)
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		body := make([]byte, 256)

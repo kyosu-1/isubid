@@ -392,7 +392,7 @@ func fetchAllAuctionPages(ctx context.Context, c *Client, p AuctionListParams) (
 	var totalCount int64
 	for page := 1; ; page++ {
 		if page > maxAuctionPages {
-			return nil, 0, fmt.Errorf("GET /auctions: has_next が %dページ辿っても false にならない", maxAuctionPages)
+			return nil, 0, fmt.Errorf("GET /api/auctions: has_next が %dページ辿っても false にならない", maxAuctionPages)
 		}
 		p.Page = page
 		l, err := c.GetAuctions(ctx, p)
@@ -403,12 +403,12 @@ func fetchAllAuctionPages(ctx context.Context, c *Client, p AuctionListParams) (
 			return nil, 0, err
 		}
 		if page > 1 && l.TotalCount > totalCount {
-			return nil, 0, fmt.Errorf("GET /auctions: total_count がページを進めて増えた (page %d: %d → page %d: %d)",
+			return nil, 0, fmt.Errorf("GET /api/auctions: total_count がページを進めて増えた (page %d: %d → page %d: %d)",
 				page-1, totalCount, page, l.TotalCount)
 		}
 		totalCount = l.TotalCount
 		if l.HasNext && len(l.Auctions) != auctionsPerPage {
-			return nil, 0, fmt.Errorf("GET /auctions?page=%d: has_next が true なのに %d件 (期待: %d件)",
+			return nil, 0, fmt.Errorf("GET /api/auctions?page=%d: has_next が true なのに %d件 (期待: %d件)",
 				page, len(l.Auctions), auctionsPerPage)
 		}
 		all = append(all, l.Auctions...)
@@ -433,7 +433,7 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 	// 初期化処理の所要時間ぶんのずれは endsAtTolerance が吸収する。
 	base := time.Now().UTC()
 	if lang == "" {
-		return fmt.Errorf("POST /initialize: lang が空")
+		return fmt.Errorf("POST /api/initialize: lang が空")
 	}
 
 	// 2. 初期データの検証
@@ -457,7 +457,7 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 			return err
 		}
 		if len(beyond.Auctions) != 0 || beyond.HasNext {
-			return fmt.Errorf("GET /auctions?page=%d (範囲外): %d件 / has_next=%v (期待: 0件 / false)",
+			return fmt.Errorf("GET /api/auctions?page=%d (範囲外): %d件 / has_next=%v (期待: 0件 / false)",
 				beyondPage, len(beyond.Auctions), beyond.HasNext)
 		}
 
@@ -526,12 +526,12 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 			}
 		}
 		// 非数値の id は 400
-		code, _, _, err := c.doRaw(ctx, "/users/notanumber/icon")
+		code, _, _, err := c.doRaw(ctx, "/api/users/notanumber/icon")
 		if err != nil {
 			return err
 		}
 		if code != 400 {
-			return fmt.Errorf("GET /users/notanumber/icon: status %d (期待: 400)", code)
+			return fmt.Errorf("GET /api/users/notanumber/icon: status %d (期待: 400)", code)
 		}
 
 		// 検索とカテゴリ絞り込み
@@ -546,11 +546,11 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 			q          string
 			categoryID int64
 		}{
-			{"GET /auctions?q=" + probeTitleOnly + " (title専用プローブ)", probeTitleOnly, 0},
-			{"GET /auctions?q=" + probeDescriptionOnly + " (description専用プローブ)", probeDescriptionOnly, 0},
-			{"GET /auctions?q=" + probeNoMatch + " (該当なし)", probeNoMatch, 0},
-			{"GET /auctions?category=1", "", 1},
-			{"GET /auctions?q=" + probeTitleOnly + "&category=2 (AND結合)", probeTitleOnly, 2},
+			{"GET /api/auctions?q=" + probeTitleOnly + " (title専用プローブ)", probeTitleOnly, 0},
+			{"GET /api/auctions?q=" + probeDescriptionOnly + " (description専用プローブ)", probeDescriptionOnly, 0},
+			{"GET /api/auctions?q=" + probeNoMatch + " (該当なし)", probeNoMatch, 0},
+			{"GET /api/auctions?category=1", "", 1},
+			{"GET /api/auctions?q=" + probeTitleOnly + "&category=2 (AND結合)", probeTitleOnly, 2},
 		} {
 			got, totalCount, err := fetchAllAuctionPages(ctx, c,
 				AuctionListParams{Q: probe.q, Category: probe.categoryID})
@@ -567,7 +567,7 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 
 		// 不正値は 400
 		// q=255 rune 超(256 rune)は設計 §3-4 が列挙する5件目の不正値。
-		// GetAuctionsRaw は "/auctions?" + rawQuery をそのまま送るため URL エンコードが要る。
+		// GetAuctionsRaw は "/api/auctions?" + rawQuery をそのまま送るため URL エンコードが要る。
 		longQ := "q=" + url.QueryEscape(strings.Repeat("あ", 256))
 		for _, raw := range []string{"page=0", "page=-1", "page=abc", "category=abc", longQ} {
 			code, err := c.GetAuctionsRaw(ctx, raw)
@@ -575,7 +575,7 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 				return err
 			}
 			if code != 400 {
-				return fmt.Errorf("GET /auctions?%s: status %d (期待: 400)", raw, code)
+				return fmt.Errorf("GET /api/auctions?%s: status %d (期待: 400)", raw, code)
 			}
 		}
 	} else {
@@ -639,22 +639,22 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 		return err
 	}
 	lowCode, lowBody, err := seedClient.doJSON(ctx, http.MethodPost,
-		fmt.Sprintf("/auctions/%d/bids", auctionID), map[string]int64{"amount": detail.CurrentPrice})
+		fmt.Sprintf("/api/auctions/%d/bids", auctionID), map[string]int64{"amount": detail.CurrentPrice})
 	if err != nil {
 		return err
 	}
 	if lowCode != 400 {
-		return fmt.Errorf("POST /auctions/%d/bids: 現在価格以下の入札が status %d (期待: 400)", auctionID, lowCode)
+		return fmt.Errorf("POST /api/auctions/%d/bids: 現在価格以下の入札が status %d (期待: 400)", auctionID, lowCode)
 	}
 	var rejection struct {
 		Error        string `json:"error"`
 		CurrentPrice int64  `json:"current_price"`
 	}
 	if err := json.Unmarshal(lowBody, &rejection); err != nil {
-		return fmt.Errorf("POST /auctions/%d/bids: too-low応答のJSONが不正: %w", auctionID, err)
+		return fmt.Errorf("POST /api/auctions/%d/bids: too-low応答のJSONが不正: %w", auctionID, err)
 	}
 	if rejection.Error == "" || rejection.CurrentPrice != detail.CurrentPrice {
-		return fmt.Errorf("POST /auctions/%d/bids: too-low応答bodyが不正 (%+v, 期待: current_price=%d)",
+		return fmt.Errorf("POST /api/auctions/%d/bids: too-low応答bodyが不正 (%+v, 期待: current_price=%d)",
 			auctionID, rejection, detail.CurrentPrice)
 	}
 	bid, code, err := seedClient.PostBid(ctx, auctionID, detail.CurrentPrice+100)
@@ -662,10 +662,10 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 		return err
 	}
 	if code != 201 {
-		return fmt.Errorf("POST /auctions/%d/bids: status %d (期待: 201)", auctionID, code)
+		return fmt.Errorf("POST /api/auctions/%d/bids: status %d (期待: 201)", auctionID, code)
 	}
 	if bid.UserID != seedUser.ID {
-		return fmt.Errorf("POST /auctions/%d/bids: user_id が %d (期待: %d)", auctionID, bid.UserID, seedUser.ID)
+		return fmt.Errorf("POST /api/auctions/%d/bids: user_id が %d (期待: %d)", auctionID, bid.UserID, seedUser.ID)
 	}
 	after, err := seedClient.GetAuction(ctx, auctionID)
 	if err != nil {
@@ -686,7 +686,7 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 	if _, code, err := anon.PostBid(ctx, auctionID, 999999); err != nil {
 		return err
 	} else if code != 401 {
-		return fmt.Errorf("POST /auctions/%d/bids: 未ログイン入札が status %d (期待: 401)", auctionID, code)
+		return fmt.Errorf("POST /api/auctions/%d/bids: 未ログイン入札が status %d (期待: 401)", auctionID, code)
 	}
 
 	// 6. not-live オークションへの入札は400
@@ -694,7 +694,7 @@ func (s *Scenario) Prepare(ctx context.Context, step *isucandar.BenchmarkStep) e
 		if _, code, err := seedClient.PostBid(ctx, id, 999999); err != nil {
 			return err
 		} else if code != 400 {
-			return fmt.Errorf("POST /auctions/%d/bids: not-liveへの入札が status %d (期待: 400)", id, code)
+			return fmt.Errorf("POST /api/auctions/%d/bids: not-liveへの入札が status %d (期待: 400)", id, code)
 		}
 	}
 

@@ -21,7 +21,7 @@ func TestGetStatsMe(t *testing.T) {
 
 	// seed: user 11 は auction 11 のみを出品しており、closed / winner 12 / 12000
 	c11 := loginSeedUser(t, ts.URL, "seed_user_11")
-	res, err := c11.Get(ts.URL + "/stats/me")
+	res, err := c11.Get(ts.URL + "/api/stats/me")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestGetStatsMe(t *testing.T) {
 
 	// seed: user 1 は auction 1 のみ出品、live で未落札
 	c1 := loginSeedUser(t, ts.URL, "seed_user_01")
-	res2, err := c1.Get(ts.URL + "/stats/me")
+	res2, err := c1.Get(ts.URL + "/api/stats/me")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestGetStatsMe(t *testing.T) {
 	if _, err := h.closeDueAuctions(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	res3, err := c1.Get(ts.URL + "/stats/me")
+	res3, err := c1.Get(ts.URL + "/api/stats/me")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestGetStatsMe(t *testing.T) {
 func TestGetStatsMeRequiresLogin(t *testing.T) {
 	ts := newTestServer(t)
 	initApp(t, ts)
-	res, err := http.Get(ts.URL + "/stats/me")
+	res, err := http.Get(ts.URL + "/api/stats/me")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -24,7 +24,7 @@ func TestGetUserIcon(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := http.Get(ts.URL + "/users/1/icon")
+	res, err := http.Get(ts.URL + "/api/users/1/icon")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestGetUserIconNotSet(t *testing.T) {
 	initApp(t, ts)
 
 	// シードユーザーは全員 icon が NULL
-	res, err := http.Get(ts.URL + "/users/2/icon")
+	res, err := http.Get(ts.URL + "/api/users/2/icon")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestGetUserIconUnknownUser(t *testing.T) {
 	ts := newTestServer(t)
 	initApp(t, ts)
 
-	res, err := http.Get(ts.URL + "/users/99999/icon")
+	res, err := http.Get(ts.URL + "/api/users/99999/icon")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestGetUserIconInvalidID(t *testing.T) {
 	initApp(t, ts)
 
 	for _, id := range []string{"notanumber", "1.5", "99999999999999999999"} {
-		res, err := http.Get(fmt.Sprintf("%s/users/%s/icon", ts.URL, id))
+		res, err := http.Get(fmt.Sprintf("%s/api/users/%s/icon", ts.URL, id))
 		if err != nil {
 			t.Fatal(err)
 		}

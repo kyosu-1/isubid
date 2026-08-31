@@ -105,22 +105,22 @@ func (c *Client) doRaw(ctx context.Context, path string) (int, string, []byte, e
 // GetUserIcon はアイコンを取得し、ステータス・Content-Type・本文を返す。
 // 404 はアイコン未設定・ユーザー不在の正常な応答なので、エラーにはしない。
 func (c *Client) GetUserIcon(ctx context.Context, id int64) (int, string, []byte, error) {
-	return c.doRaw(ctx, fmt.Sprintf("/users/%d/icon", id))
+	return c.doRaw(ctx, fmt.Sprintf("/api/users/%d/icon", id))
 }
 
 func (c *Client) Initialize(ctx context.Context) (string, error) {
-	code, b, err := c.doJSONWith(ctx, c.initAg, http.MethodPost, "/initialize", map[string]string{})
+	code, b, err := c.doJSONWith(ctx, c.initAg, http.MethodPost, "/api/initialize", map[string]string{})
 	if err != nil {
 		return "", err
 	}
 	if code != http.StatusOK {
-		return "", fmt.Errorf("POST /initialize: status %d (body: %s)", code, b)
+		return "", fmt.Errorf("POST /api/initialize: status %d (body: %s)", code, b)
 	}
 	var body struct {
 		Lang string `json:"lang"`
 	}
 	if err := json.Unmarshal(b, &body); err != nil {
-		return "", fmt.Errorf("POST /initialize: 不正なJSON: %w", err)
+		return "", fmt.Errorf("POST /api/initialize: 不正なJSON: %w", err)
 	}
 	return body.Lang, nil
 }
@@ -143,11 +143,11 @@ func (c *Client) auth(ctx context.Context, path, name, password string, wantCode
 }
 
 func (c *Client) Register(ctx context.Context, name, password string) (*User, error) {
-	return c.auth(ctx, "/register", name, password, http.StatusCreated)
+	return c.auth(ctx, "/api/register", name, password, http.StatusCreated)
 }
 
 func (c *Client) Login(ctx context.Context, name, password string) (*User, error) {
-	return c.auth(ctx, "/login", name, password, http.StatusOK)
+	return c.auth(ctx, "/api/login", name, password, http.StatusOK)
 }
 
 // AuctionListParams は GET /auctions のクエリ。ゼロ値は「page 未指定・絞り込み無し」。
@@ -173,7 +173,7 @@ func (p AuctionListParams) query() string {
 }
 
 func (c *Client) GetAuctions(ctx context.Context, p AuctionListParams) (*AuctionList, error) {
-	path := "/auctions"
+	path := "/api/auctions"
 	if q := p.query(); q != "" {
 		path += "?" + q
 	}
@@ -197,12 +197,12 @@ func (c *Client) GetAuctions(ctx context.Context, p AuctionListParams) (*Auction
 // GetAuctionsRaw は生のクエリ文字列を送り、ステータスコードだけを返す。
 // 不正値が 400 になることの検証に使う(ボディの形は問わない)。
 func (c *Client) GetAuctionsRaw(ctx context.Context, rawQuery string) (int, error) {
-	code, _, err := c.doJSON(ctx, http.MethodGet, "/auctions?"+rawQuery, nil)
+	code, _, err := c.doJSON(ctx, http.MethodGet, "/api/auctions?"+rawQuery, nil)
 	return code, err
 }
 
 func (c *Client) GetAuction(ctx context.Context, id int64) (*AuctionDetail, error) {
-	path := fmt.Sprintf("/auctions/%d", id)
+	path := fmt.Sprintf("/api/auctions/%d", id)
 	code, b, err := c.doJSON(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
@@ -241,7 +241,7 @@ func (c *Client) GetAuctionRetry(ctx context.Context, id int64, attempts int, ba
 
 // PostBid は入札する。4xxはエラーではなくステータスコードで返す(検証側で判断)。
 func (c *Client) PostBid(ctx context.Context, auctionID, amount int64) (*BidCreated, int, error) {
-	path := fmt.Sprintf("/auctions/%d/bids", auctionID)
+	path := fmt.Sprintf("/api/auctions/%d/bids", auctionID)
 	code, b, err := c.doJSON(ctx, http.MethodPost, path, map[string]int64{"amount": amount})
 	if err != nil {
 		return nil, 0, err
@@ -261,25 +261,25 @@ func (c *Client) PostBid(ctx context.Context, auctionID, amount int64) (*BidCrea
 
 // GetNotifications は自分宛の通知一覧を取得する。
 func (c *Client) GetNotifications(ctx context.Context) ([]Notification, error) {
-	code, b, err := c.doJSON(ctx, http.MethodGet, "/notifications", nil)
+	code, b, err := c.doJSON(ctx, http.MethodGet, "/api/notifications", nil)
 	if err != nil {
 		return nil, err
 	}
 	if code != http.StatusOK {
-		return nil, fmt.Errorf("GET /notifications: status %d (body: %s)", code, b)
+		return nil, fmt.Errorf("GET /api/notifications: status %d (body: %s)", code, b)
 	}
 	var body struct {
 		Notifications []Notification `json:"notifications"`
 	}
 	if err := json.Unmarshal(b, &body); err != nil {
-		return nil, fmt.Errorf("GET /notifications: 不正なJSON: %w", err)
+		return nil, fmt.Errorf("GET /api/notifications: 不正なJSON: %w", err)
 	}
 	return body.Notifications, nil
 }
 
 // GetBidFeed は入札フィードを取得する。since より大きい id の入札が id 昇順で返る。
 func (c *Client) GetBidFeed(ctx context.Context, auctionID, since int64) ([]Bid, error) {
-	path := fmt.Sprintf("/auctions/%d/bids?since=%d", auctionID, since)
+	path := fmt.Sprintf("/api/auctions/%d/bids?since=%d", auctionID, since)
 	code, b, err := c.doJSON(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
@@ -300,7 +300,7 @@ func (c *Client) GetBidFeed(ctx context.Context, auctionID, since int64) ([]Bid,
 // (呼び出し側が「結果不明(転送エラー/5xx)」と「確定的に未コミット(4xx)」を区別できるようにする)。
 func (c *Client) PostAuction(ctx context.Context, title, description string,
 	categoryID, startingPrice, durationSeconds int64) (*AuctionCreated, int, error) {
-	code, b, err := c.doJSON(ctx, http.MethodPost, "/auctions", map[string]any{
+	code, b, err := c.doJSON(ctx, http.MethodPost, "/api/auctions", map[string]any{
 		"title": title, "description": description, "category_id": categoryID,
 		"starting_price": startingPrice, "duration_seconds": durationSeconds,
 	})
@@ -308,30 +308,30 @@ func (c *Client) PostAuction(ctx context.Context, title, description string,
 		return nil, 0, err
 	}
 	if code >= http.StatusInternalServerError {
-		return nil, code, fmt.Errorf("POST /auctions: status %d (body: %s)", code, b)
+		return nil, code, fmt.Errorf("POST /api/auctions: status %d (body: %s)", code, b)
 	}
 	if code != http.StatusCreated {
 		return nil, code, nil
 	}
 	var a AuctionCreated
 	if err := json.Unmarshal(b, &a); err != nil {
-		return nil, code, fmt.Errorf("POST /auctions: 不正なJSON: %w", err)
+		return nil, code, fmt.Errorf("POST /api/auctions: 不正なJSON: %w", err)
 	}
 	return &a, code, nil
 }
 
 // GetStatsMe は出品者の売上サマリを取得する。
 func (c *Client) GetStatsMe(ctx context.Context) (*Stats, error) {
-	code, b, err := c.doJSON(ctx, http.MethodGet, "/stats/me", nil)
+	code, b, err := c.doJSON(ctx, http.MethodGet, "/api/stats/me", nil)
 	if err != nil {
 		return nil, err
 	}
 	if code != http.StatusOK {
-		return nil, fmt.Errorf("GET /stats/me: status %d (body: %s)", code, b)
+		return nil, fmt.Errorf("GET /api/stats/me: status %d (body: %s)", code, b)
 	}
 	var s Stats
 	if err := json.Unmarshal(b, &s); err != nil {
-		return nil, fmt.Errorf("GET /stats/me: 不正なJSON: %w", err)
+		return nil, fmt.Errorf("GET /api/stats/me: 不正なJSON: %w", err)
 	}
 	return &s, nil
 }
