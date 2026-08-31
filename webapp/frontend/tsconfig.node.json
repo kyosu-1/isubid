@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    // composite プロジェクトは noEmit を張れない(TS6310)。brief 記載時の想定
+    // typescript ^5.6.3 は 5.9.3 に解決され、この制約がここで顕在化した。
+    // 出力(vite.config.js / .d.ts / .tsbuildinfo)はリポジトリを汚さないよう
+    // node_modules 配下へ逃がす(node_modules は .gitignore 済み)。
+    "outDir": "./node_modules/.tmp/tsconfig.node",
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "strict": true
+  },
+  "include": ["vite.config.ts"]
+}
